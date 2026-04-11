@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "godot": {
+      "command": "node",
+      "args": ["/Users/tanner/dev/godot-mcp/build/index.js"],
+      "env": {
+        "DEBUG": "true"
+      }
+    }
+  }
+}
