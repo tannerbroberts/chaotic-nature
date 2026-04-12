@@ -3,12 +3,15 @@ extends Node2D
 @onready var tilemap: TileMapLayer = $TileMapLayer
 @onready var player: Node2D = $Player
 
+var _run_button: Button
+
 func _ready() -> void:
 	_setup_tileset()
 	_paint_test_grid()
 	# Place the player at the center of the grid.
 	player.set_tile_pos(Vector2i(5, 5))
 	player.position = tilemap.map_to_local(Vector2i(5, 5))
+	_create_run_button()
 
 func _setup_tileset() -> void:
 	var tile_set := tilemap.tile_set
@@ -43,4 +46,29 @@ func _unhandled_input(event: InputEvent) -> void:
 		var key := event as InputEventKey
 		if key.keycode == KEY_R and key.pressed and not key.echo:
 			player.is_running = not player.is_running
+			_run_button.button_pressed = player.is_running
 			print("Running: ", player.is_running)
+
+func _create_run_button() -> void:
+	var canvas := CanvasLayer.new()
+	canvas.layer = 10
+	add_child(canvas)
+
+	_run_button = Button.new()
+	_run_button.text = "Run"
+	_run_button.toggle_mode = true
+	_run_button.anchor_left = 1.0
+	_run_button.anchor_top = 1.0
+	_run_button.anchor_right = 1.0
+	_run_button.anchor_bottom = 1.0
+	_run_button.offset_left = -100
+	_run_button.offset_top = -60
+	_run_button.offset_right = -10
+	_run_button.offset_bottom = -10
+	_run_button.add_theme_font_size_override("font_size", 20)
+	_run_button.toggled.connect(_on_run_toggled)
+	canvas.add_child(_run_button)
+
+func _on_run_toggled(pressed: bool) -> void:
+	player.is_running = pressed
+	print("Running: ", pressed)

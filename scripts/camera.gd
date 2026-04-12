@@ -1,7 +1,7 @@
 extends Camera2D
 
 @export var target_path: NodePath
-@export var smooth_speed := 8.0
+@export var smooth_speed := 4.0
 
 var target: Node2D
 

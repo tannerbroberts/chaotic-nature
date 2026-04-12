@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <!--
+    Fern foliage asset — 48×48 px, centers on a 32×32 tile (8 px overhang per side).
+
+    ARCHITECTURAL RULE — OUTER BORDER:
+    The stroke on every filled shape is REQUIRED. The tap-highlight shader traces
+    the alpha boundary of this asset to produce a scrim outline. Without a clean
+    border, the outline flickers on semi-transparent edges. All foliage assets
+    must follow this convention.  See docs/foliage_architecture.md.
+  -->
+
+  <!-- Central stem -->
+  <path d="M24 44 Q23 30 24 8"
+        fill="none" stroke="#2d5a1e" stroke-width="2" stroke-linecap="round"/>
+
+  <!-- Fronds — left side (bottom to top, shrinking) -->
+  <path d="M24 39 C19 36 13 37 10 35 C13 33 19 33 24 36"
+        fill="#3d8b2f" stroke="#1a3a1a" stroke-width="1" stroke-linejoin="round"/>
+  <path d="M24 32 C18 28 10 30 7 27 C10 24 18 24 24 28"
+        fill="#4a9a38" stroke="#1a3a1a" stroke-width="1" stroke-linejoin="round"/>
+  <path d="M24 25 C17 20 9 23 5 19 C9 16 17 16 24 21"
+        fill="#3d8b2f" stroke="#1a3a1a" stroke-width="1" stroke-linejoin="round"/>
+  <path d="M24 18 C19 14 14 15 11 12 C14 10 20 11 24 15"
+        fill="#4a9a38" stroke="#1a3a1a" stroke-width="1" stroke-linejoin="round"/>
+  <path d="M24 12 C21 9 18 10 16 8 C18 6 22 7 24 10"
+        fill="#3d8b2f" stroke="#1a3a1a" stroke-width="1" stroke-linejoin="round"/>
+
+  <!-- Fronds — right side (mirrored) -->
+  <path d="M24 39 C29 36 35 37 38 35 C35 33 29 33 24 36"
+        fill="#3d8b2f" stroke="#1a3a1a" stroke-width="1" stroke-linejoin="round"/>
+  <path d="M24 32 C30 28 38 30 41 27 C38 24 30 24 24 28"
+        fill="#4a9a38" stroke="#1a3a1a" stroke-width="1" stroke-linejoin="round"/>
+  <path d="M24 25 C31 20 39 23 43 19 C39 16 31 16 24 21"
+        fill="#3d8b2f" stroke="#1a3a1a" stroke-width="1" stroke-linejoin="round"/>
+  <path d="M24 18 C29 14 34 15 37 12 C34 10 28 11 24 15"
+        fill="#4a9a38" stroke="#1a3a1a" stroke-width="1" stroke-linejoin="round"/>
+  <path d="M24 12 C27 9 30 10 32 8 C30 6 26 7 24 10"
+        fill="#3d8b2f" stroke="#1a3a1a" stroke-width="1" stroke-linejoin="round"/>
+
+  <!-- Fiddlehead curl at top -->
+  <circle cx="24" cy="6" r="2.5"
+          fill="#4a9a38" stroke="#1a3a1a" stroke-width="0.8"/>
+</svg>

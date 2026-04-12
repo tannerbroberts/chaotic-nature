@@ -44,18 +44,66 @@ func _in_bounds(tile: Vector2i) -> bool:
 	var used := _tilemap.get_used_rect()
 	return used.has_point(tile)
 
-## BFS pathfinding. Returns Array[Vector2i] from start (exclusive) to end (inclusive).
-## Returns an empty array if no path exists. The start tile is NOT included in the result.
+## Check if a single step from one tile to an adjacent tile is valid.
+func _can_step(from: Vector2i, to: Vector2i) -> bool:
+	var offset := to - from
+	for dir_data: Dictionary in DIRECTION_DATA:
+		if (dir_data["offset"] as Vector2i) == offset:
+			var from_flags := _get_flags(from)
+			if from_flags & (dir_data["exit"] as int):
+				return false
+			var to_flags := _get_flags(to)
+			if to_flags & (dir_data["entry"] as int):
+				return false
+			if offset.x != 0 and offset.y != 0:
+				var h_tile := Vector2i(from.x + offset.x, from.y)
+				var v_tile := Vector2i(from.x, from.y + offset.y)
+				if _get_flags(h_tile) == 255 or _get_flags(v_tile) == 255:
+					return false
+			return true
+	return false
+
+## Build a direct path preferring the larger cardinal axis.
+## Move horizontal when |dx| > |dy|, vertical when |dy| > |dx|, diagonal when equal.
+## Returns empty array if any step is blocked (caller should fall back to BFS).
+func _find_direct_path(start: Vector2i, end: Vector2i) -> Array[Vector2i]:
+	var path: Array[Vector2i] = []
+	var current := start
+	while current != end:
+		var dx := end.x - current.x
+		var dy := end.y - current.y
+		var abs_dx := absi(dx)
+		var abs_dy := absi(dy)
+		var step: Vector2i
+		if abs_dx > abs_dy:
+			step = Vector2i(signi(dx), 0)
+		elif abs_dy > abs_dx:
+			step = Vector2i(0, signi(dy))
+		else:
+			step = Vector2i(signi(dx), signi(dy))
+		var next := current + step
+		if not _in_bounds(next) or not _can_step(current, next):
+			return [] as Array[Vector2i]
+		current = next
+		path.push_back(current)
+	return path
+
+## Returns Array[Vector2i] from start (exclusive) to end (inclusive).
+## Tries a direct axis-preference path first, falls back to BFS if blocked.
 func find_path(start: Vector2i, end: Vector2i) -> Array[Vector2i]:
 	if start == end:
 		return [] as Array[Vector2i]
-
 	if not _in_bounds(end):
 		return [] as Array[Vector2i]
+	var direct := _find_direct_path(start, end)
+	if direct.size() > 0:
+		return direct
+	return _find_path_bfs(start, end)
 
-	# BFS
+## BFS pathfinding fallback.
+func _find_path_bfs(start: Vector2i, end: Vector2i) -> Array[Vector2i]:
 	var queue: Array[Vector2i] = [start]
-	var came_from: Dictionary = {start: start}  # tile -> previous tile
+	var came_from: Dictionary = {start: start}
 
 	while queue.size() > 0:
 		var current := queue.pop_front() as Vector2i
@@ -72,22 +120,16 @@ func find_path(start: Vector2i, end: Vector2i) -> Array[Vector2i]:
 			if not _in_bounds(neighbor):
 				continue
 
-			# Check exit from current tile.
 			if current_flags & (dir_data["exit"] as int):
 				continue
 
-			# Check entry into neighbor tile.
 			var neighbor_flags := _get_flags(neighbor)
 			if neighbor_flags & (dir_data["entry"] as int):
 				continue
 
-			# For diagonal movement, also check that the two adjacent cardinal
-			# tiles are passable (prevents corner-cutting through walls).
 			var offset: Vector2i = dir_data["offset"] as Vector2i
 			if offset.x != 0 and offset.y != 0:
-				# Horizontal neighbor
 				var h_tile := Vector2i(current.x + offset.x, current.y)
-				# Vertical neighbor
 				var v_tile := Vector2i(current.x, current.y + offset.y)
 				if _get_flags(h_tile) == 255 or _get_flags(v_tile) == 255:
 					continue
@@ -95,7 +137,6 @@ func find_path(start: Vector2i, end: Vector2i) -> Array[Vector2i]:
 			came_from[neighbor] = current
 			queue.push_back(neighbor)
 
-	# Reconstruct path.
 	if end not in came_from:
 		return [] as Array[Vector2i]
 
