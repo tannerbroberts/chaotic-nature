@@ -33,7 +33,7 @@ const Features = {
 	 * @function Engine.isSecureContext
 	 */
 	isSecureContext: function () {
-		return true;
+		return window['isSecureContext'] === true;
 	},
 
 	/**

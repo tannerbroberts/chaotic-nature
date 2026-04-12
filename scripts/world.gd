@@ -28,26 +28,35 @@ func _setup_tileset() -> void:
 	tile_set.add_custom_data_layer()
 	tile_set.set_custom_data_layer_name(0, "collision_flags")
 	tile_set.set_custom_data_layer_type(0, TYPE_INT)
-	# Create a simple colored tile source (no texture needed).
-	var source := TileSetAtlasSource.new()
-	# Create a 1x1 pixel placeholder image as texture.
-	var img := Image.create(64, 64, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0.3, 0.6, 0.2))  # Green grass color.
+	# Create a two-tile atlas for a subtle checkerboard pattern.
+	var base_color := Color(0.3, 0.6, 0.2)  # Green grass color.
+	var tint := 0.05
+	var color_a := base_color.darkened(tint)
+	var color_b := base_color.lightened(tint)
+	# Build a 128x64 atlas image: tile A on the left, tile B on the right.
+	var img := Image.create(128, 64, false, Image.FORMAT_RGBA8)
+	img.fill_rect(Rect2i(0, 0, 64, 64), color_a)
+	img.fill_rect(Rect2i(64, 0, 64, 64), color_b)
 	var tex := ImageTexture.create_from_image(img)
+	var source := TileSetAtlasSource.new()
 	source.texture = tex
 	source.texture_region_size = Vector2i(64, 64)
 	tile_set.add_source(source, 0)
-	# Create tile at atlas coords (0, 0).
+	# Tile A at atlas coords (0, 0).
 	source.create_tile(Vector2i(0, 0))
-	# Set collision_flags to 0 (fully walkable).
-	var tile_data := source.get_tile_data(Vector2i(0, 0), 0)
-	tile_data.set_custom_data("collision_flags", 0)
+	var tile_data_a := source.get_tile_data(Vector2i(0, 0), 0)
+	tile_data_a.set_custom_data("collision_flags", 0)
+	# Tile B at atlas coords (1, 0).
+	source.create_tile(Vector2i(1, 0))
+	var tile_data_b := source.get_tile_data(Vector2i(1, 0), 0)
+	tile_data_b.set_custom_data("collision_flags", 0)
 
 func _paint_test_grid() -> void:
-	# Paint a 16x16 grid of walkable tiles.
+	# Paint a 16x16 grid of walkable tiles with a checkerboard pattern.
 	for x in range(16):
 		for y in range(16):
-			tilemap.set_cell(Vector2i(x, y), 0, Vector2i(0, 0))
+			var atlas_col := (x + y) % 2  # Alternate between tile A and B.
+			tilemap.set_cell(Vector2i(x, y), 0, Vector2i(atlas_col, 0))
 
 func _unhandled_input(event: InputEvent) -> void:
 	# Toggle run with R key.

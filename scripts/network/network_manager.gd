@@ -14,9 +14,8 @@ signal tick_state_received(tick_number: int, players: Array[Dictionary])
 signal player_joined(player_id: int, tile_x: int, tile_y: int)
 signal player_left(player_id: int)
 
-const WS_PORT := 9001
+const SERVER_URL := "ws://127.0.0.1:9001"
 
-var server_url := ""
 var my_player_id := -1
 
 var _socket := WebSocketPeer.new()
@@ -25,24 +24,9 @@ var _connected := false
 func _ready() -> void:
 	set_process(false)
 
-## Build the WebSocket URL from the browser's current hostname so the client
-## always connects back to the same machine that served the page — works on
-## localhost, LAN IPs, and future production domains with zero config.
-func _resolve_server_url() -> String:
-	var host := "127.0.0.1"
-	if OS.has_feature("web"):
-		var js_host: String = JavaScriptBridge.eval("window.location.hostname", true)
-		if js_host != "":
-			host = js_host
-	return "ws://%s:%d" % [host, WS_PORT]
-
 ## Call this to initiate the connection. Can be called from a menu or on startup.
-func connect_to_server(url := "") -> void:
-	if url != "":
-		server_url = url
-	elif server_url == "":
-		server_url = _resolve_server_url()
-	var err := _socket.connect_to_url(server_url)
+func connect_to_server() -> void:
+	var err := _socket.connect_to_url(SERVER_URL)
 	if err != OK:
 		push_error("NetworkManager: failed to connect — ", err)
 		return
@@ -57,7 +41,7 @@ func _process(_delta: float) -> void:
 		if not _connected:
 			_connected = true
 			connected.emit()
-			print("NetworkManager: connected to ", server_url)
+			print("NetworkManager: connected to ", SERVER_URL)
 		# Drain incoming messages.
 		while _socket.get_available_packet_count() > 0:
 			var data := _socket.get_packet()

@@ -10,6 +10,8 @@ var tilemap: TileMapLayer
 var player: Node2D
 var _pathfinder: RefCounted
 var _tap_highlight: Node2D
+var _destination_tile := Vector2i.ZERO
+var _has_destination := false
 
 func _ready() -> void:
 	tilemap = get_node(tilemap_path) as TileMapLayer
@@ -17,6 +19,12 @@ func _ready() -> void:
 	_pathfinder = PathfinderScript.new(tilemap)
 	if tap_highlight_path:
 		_tap_highlight = get_node(tap_highlight_path)
+
+func _process(_delta: float) -> void:
+	if _has_destination and player.tile_pos == _destination_tile and player.position == tilemap.map_to_local(_destination_tile):
+		if _tap_highlight:
+			_tap_highlight.clear()
+		_has_destination = false
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
@@ -35,6 +43,8 @@ func _handle_click(screen_pos: Vector2) -> void:
 	# Show tap-scrim highlight on the top-level asset at this tile.
 	if _tap_highlight:
 		_tap_highlight.highlight_at(clicked_tile)
+	_destination_tile = clicked_tile
+	_has_destination = true
 	if NetworkManager.my_player_id >= 0:
 		# Server-authoritative: send input, server does pathfinding.
 		NetworkManager.send_move_to(clicked_tile.x, clicked_tile.y)

@@ -42,10 +42,14 @@ func highlight_at(tile_pos: Vector2i) -> void:
 	# Foliage is highest priority; fall back to the base tile.
 	if _foliage_layer and _foliage_layer.get_cell_source_id(tile_pos) != -1:
 		var source := _foliage_layer.tile_set.get_source(0) as TileSetAtlasSource
-		_show(tile_pos, source.texture)
+		var atlas_coords := _foliage_layer.get_cell_atlas_coords(tile_pos)
+		var region := source.get_tile_texture_region(atlas_coords)
+		_show(tile_pos, source.texture, region)
 	elif _base_tilemap and _base_tilemap.get_cell_source_id(tile_pos) != -1:
 		var source := _base_tilemap.tile_set.get_source(0) as TileSetAtlasSource
-		_show(tile_pos, source.texture)
+		var atlas_coords := _base_tilemap.get_cell_atlas_coords(tile_pos)
+		var region := source.get_tile_texture_region(atlas_coords)
+		_show(tile_pos, source.texture, region)
 	else:
 		clear()
 
@@ -55,8 +59,8 @@ func clear() -> void:
 
 # ---------------------------------------------------------------------------
 
-func _show(tile_pos: Vector2i, original_tex: Texture2D) -> void:
-	var padded := _get_padded_texture(original_tex)
+func _show(tile_pos: Vector2i, atlas_tex: Texture2D, region: Rect2i) -> void:
+	var padded := _get_padded_texture(atlas_tex, region)
 	if padded == null:
 		clear()
 		return
@@ -64,8 +68,8 @@ func _show(tile_pos: Vector2i, original_tex: Texture2D) -> void:
 	_outline_sprite.position = _base_tilemap.map_to_local(tile_pos)
 	_outline_sprite.visible = true
 
-func _get_padded_texture(tex: Texture2D) -> ImageTexture:
-	var key := tex.get_instance_id()
+func _get_padded_texture(tex: Texture2D, region: Rect2i) -> ImageTexture:
+	var key := "%d_%d_%d" % [tex.get_instance_id(), region.position.x, region.position.y]
 	if key in _texture_cache:
 		return _texture_cache[key]
 
@@ -77,12 +81,13 @@ func _get_padded_texture(tex: Texture2D) -> ImageTexture:
 	if img.is_compressed():
 		img.decompress()
 
-	var w := img.get_width() + HIGHLIGHT_PADDING * 2
-	var h := img.get_height() + HIGHLIGHT_PADDING * 2
+	var tile_img := img.get_region(region)
+	var w := tile_img.get_width() + HIGHLIGHT_PADDING * 2
+	var h := tile_img.get_height() + HIGHLIGHT_PADDING * 2
 	var padded := Image.create(w, h, false, Image.FORMAT_RGBA8)
 	padded.blit_rect(
-		img,
-		Rect2i(0, 0, img.get_width(), img.get_height()),
+		tile_img,
+		Rect2i(0, 0, tile_img.get_width(), tile_img.get_height()),
 		Vector2i(HIGHLIGHT_PADDING, HIGHLIGHT_PADDING)
 	)
 	var result := ImageTexture.create_from_image(padded)
