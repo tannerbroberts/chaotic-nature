@@ -12,14 +12,15 @@ var _visual_target := Vector2.ZERO
 var _lerp_progress := 1.0  # Start fully arrived.
 
 func _ready() -> void:
-	tilemap = get_node(tilemap_path) as TileMapLayer
+	if tilemap_path != NodePath(""):
+		tilemap = get_node(tilemap_path) as TileMapLayer
 	GameTickManager.tick.connect(_on_tick)
 	_visual_start = position
 	_visual_target = position
 	# Create a placeholder sprite if the Sprite2D has no texture.
 	var sprite := $Sprite2D as Sprite2D
 	if sprite and sprite.texture == null:
-		var img := Image.create(24, 24, false, Image.FORMAT_RGBA8)
+		var img := Image.create(48, 48, false, Image.FORMAT_RGBA8)
 		img.fill(Color(0.2, 0.4, 0.9))  # Blue player square.
 		sprite.texture = ImageTexture.create_from_image(img)
 

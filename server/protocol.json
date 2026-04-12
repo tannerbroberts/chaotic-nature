@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "types": {
+    "uint8":  { "size": 1, "signed": false },
+    "int16":  { "size": 2, "signed": true },
+    "uint16": { "size": 2, "signed": false },
+    "uint32": { "size": 4, "signed": false }
+  },
+  "messages": {
+    "MOVE_TO": {
+      "id": 1,
+      "direction": "client_to_server",
+      "description": "Client requests pathfinding movement to a target tile.",
+      "fields": [
+        { "name": "target_x", "type": "int16" },
+        { "name": "target_y", "type": "int16" }
+      ]
+    },
+    "TOGGLE_RUN": {
+      "id": 2,
+      "direction": "client_to_server",
+      "description": "Client toggles walk/run mode.",
+      "fields": [
+        { "name": "running", "type": "uint8", "comment": "1 = running, 0 = walking" }
+      ]
+    },
+    "TICK_STATE": {
+      "id": 10,
+      "direction": "server_to_client",
+      "description": "Broadcast every tick with positions of all players in the instance.",
+      "fields": [
+        { "name": "tick_number", "type": "uint32" },
+        { "name": "players", "type": "array", "element": {
+          "fields": [
+            { "name": "player_id", "type": "uint16" },
+            { "name": "tile_x", "type": "int16" },
+            { "name": "tile_y", "type": "int16" },
+            { "name": "flags", "type": "uint8", "comment": "bit 0 = running" }
+          ]
+        }}
+      ]
+    },
+    "PLAYER_JOIN": {
+      "id": 11,
+      "direction": "server_to_client",
+      "description": "A new player has joined the instance.",
+      "fields": [
+        { "name": "player_id", "type": "uint16" },
+        { "name": "tile_x", "type": "int16" },
+        { "name": "tile_y", "type": "int16" }
+      ]
+    },
+    "PLAYER_LEAVE": {
+      "id": 12,
+      "direction": "server_to_client",
+      "description": "A player has left the instance.",
+      "fields": [
+        { "name": "player_id", "type": "uint16" }
+      ]
+    },
+    "WELCOME": {
+      "id": 13,
+      "direction": "server_to_client",
+      "description": "Sent to the connecting client with their assigned player ID and spawn tile.",
+      "fields": [
+        { "name": "player_id", "type": "uint16" },
+        { "name": "tile_x", "type": "int16" },
+        { "name": "tile_y", "type": "int16" }
+      ]
+    }
+  }
+}

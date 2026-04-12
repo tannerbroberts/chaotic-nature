@@ -35,6 +35,11 @@ func _handle_click(screen_pos: Vector2) -> void:
 	# Show tap-scrim highlight on the top-level asset at this tile.
 	if _tap_highlight:
 		_tap_highlight.highlight_at(clicked_tile)
-	var path: Array[Vector2i] = _pathfinder.find_path(player.tile_pos, clicked_tile)
-	if path.size() > 0:
-		player.walk_queue = path
+	if NetworkManager.my_player_id >= 0:
+		# Server-authoritative: send input, server does pathfinding.
+		NetworkManager.send_move_to(clicked_tile.x, clicked_tile.y)
+	else:
+		# Offline fallback: local pathfinding.
+		var path: Array[Vector2i] = _pathfinder.find_path(player.tile_pos, clicked_tile)
+		if path.size() > 0:
+			player.walk_queue = path

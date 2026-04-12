@@ -18,6 +18,15 @@ config/name="Chaotic Nature"
 run/main_scene="res://scenes/world.tscn"
 config/features=PackedStringArray("4.6")
 
+[display]
+
+window/size/viewport_width=720
+window/size/viewport_height=480
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/handheld/orientation=4
+
 [autoload]
 
 GameTickManager="*res://scripts/game_tick_manager.gd"
+NetworkManager="*res://scripts/network/network_manager.gd"
