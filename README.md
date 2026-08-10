@@ -18,43 +18,47 @@ disagreed about who decides what is true, the sim won and the loser is in
 
 ## Playing it
 
-`chaos` opens on the **soul view**: the whole territory as a living heat map —
-five saturations churning under climate hotspots, succession, erosion and
-diffusion — with wildlife drifting over it and **incarnation events** marked
-`✶`. Terrain-gated events open where an element's saturation crosses its
-threshold; wild sparks (the lightning strike) can open anywhere, which is what
-keeps every race joinable no matter what the map is doing.
+`chaos` opens a window. You arrive as a **soul** over a living map: the ground
+glows with elemental saturation (colours blend where elements meet), wildlife
+drifts over it, climate springs `◆` feed their element forever, and
+**birth-moments** pulse as ringed marks. Terrain past its threshold opens one;
+wild sparks — the lightning strike — can open anywhere, which keeps every race
+joinable no matter what the map is doing.
 
-Pick an event, press enter, and you are born there as that race — the sim slows
-to near-real-time, arrows steer, and the HUD shows your body burning through
-its lifespan. Die (or `esc` to release the body — it wanders on as wildlife)
-and you are a soul again, choosing another moment. Fire lives eight minutes;
-Earth a fortnight. The circle of life is the whole game loop, and it runs
-without you: unclaimed events become wildlife births, so an empty server grows
-life on its own.
+**Hover anything to learn what it is** — every patch of ground shows its five
+saturations, every marker explains itself. **Click a birth-moment** (on the map
+or in the side list) to be born there as that race. The sim slows to
+near-real-time, **click the ground to move toward it**, and the life bar shows
+your body spending its span. Die — or release the body, which lives on as
+wildlife — and you are a soul again choosing another moment. Fire lives eight
+minutes; Earth a fortnight. Unclaimed moments become wildlife births, so an
+empty world grows life on its own.
 
-```
-soul view    ↑↓ choose event · enter incarnate · 1-5 next of race · s knobs
-incarnated   ↑↓←→ steer · esc release the body
-everywhere   space pause · . step 1 sim minute · < > speed · q quit
-```
+The side panel carries the rest: the mode card says what you are and what you
+can do right now, the event list shows every open moment with its remaining
+window, and the population trace runs underneath.
 
 ## Tuning it
 
 ```
-chaos                  the game + the instrument, in one screen
-chaos watch            same, rebuilding whenever src/ changes
+chaos                  the game — windowed client
+chaos tui              terminal client (same sim, same knob table)
+chaos watch            windowed client, rebuilding whenever src/ changes
 chaos edit             open the tuning table in $EDITOR
 chaos verify           the determinism exit condition
 chaos soak [ticks]     long headless run + per-race report
 chaos test             full suite (110 tests)
 ```
 
-`s` flips to the knob table: three pages (body & rates · channel mix ·
-terrain & incarnation), every value editable while the world runs, `T` writes
-the current tables to `src/race.tuned.rs`. Shipped values live in `src/race.rs`
-and `src/terrain.rs`. Flags set starting conditions only:
-`chaos --speed 600 --pop 40 --size 128`.
+The **Knobs** section of the side panel is the whole tuning table as sliders —
+pick an element, drag a value, hover for what it does; the world updates as it
+runs. "Write tuned table" dumps the current values to `src/race.tuned.rs`.
+Shipped values live in `src/race.rs` and `src/terrain.rs`. Both clients drive
+the identical knob table from `src/tuning.rs`.
+
+The simulation library remains **zero-dependency**; `eframe` is quarantined to
+the `chaos-ui` binary as an explicitly temporary usability dependency. Flags
+set starting conditions only: `chaos --speed 600 --pop 40 --size 128`.
 
 ## Stage — S1 landed
 

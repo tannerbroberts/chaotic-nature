@@ -380,7 +380,7 @@ fn handle_tune(k: Key, v: &mut View, t: &mut Tuning, sim: &mut Sim, w: &mut Worl
             v.history = pentagram::element::PerElement([vec![], vec![], vec![], vec![], vec![]]);
             v.say("restarted at tick 0 — this run is reproducible from these knobs");
         }
-        Key::Char('T') => match write_table(t) {
+        Key::Char('T') => match knobs::write_table(t) {
             Ok(p) => v.say(format!("wrote {p}  (diff it against src/race.rs)")),
             Err(e) => v.say(format!("could not write the table: {e}")),
         },
@@ -570,89 +570,4 @@ fn inputs(
 
     log.finalize();
     log
-}
-
-/// Write the live table back out as Rust, to a *new* file. `src/race.rs` is
-/// hand-written and full of comments explaining why each number is what it is;
-/// clobbering that from a UI would throw away the part that matters.
-fn write_table(t: &Tuning) -> std::io::Result<String> {
-    use std::fmt::Write as _;
-    // `CHAOS_ROOT` is what the wrapper exports, and it is the only thing that
-    // reliably identifies *which* checkout is running. Without it, write beside
-    // the caller rather than guessing at a path that may belong to a different
-    // copy of the tree.
-    let path = match std::env::var("CHAOS_ROOT") {
-        Ok(root) => format!("{root}/src/race.tuned.rs"),
-        Err(_) => "race.tuned.rs".to_string(),
-    };
-
-    let mut s = String::from(
-        "// Written by the chaos live view. Not compiled — copy the rows you want\n\
-         // into the RACES table in race.rs, keeping the comments there.\n\n\
-         pub const RACES: PerElement<RaceAttrs> = PerElement([\n",
-    );
-    for e in Element::ALL {
-        let a = t.races[e];
-        let _ = write!(
-            s,
-            "    RaceAttrs {{\n        \
-             element: Element::{},\n        \
-             lifespan: {},\n        \
-             lifespan_variance: {},\n        \
-             speed: Fx::ratio({}, 100),\n        \
-             radius: Fx::ratio({}, 100),\n        \
-             deposit_unit: {},\n        \
-             deposit: RateBand::new({}, {}, {}, {}),\n        \
-             deposit_mix: ChannelMix::new({}, {}, {}, {}, {}),\n        \
-             consume_unit: {},\n        \
-             consume: RateBand::new({}, {}, {}, {}),\n        \
-             consume_mix: ChannelMix::new({}, {}, {}, {}, {}),\n        \
-             fantasy: {:?},\n    }},\n",
-            e.name(),
-            a.lifespan,
-            a.lifespan_variance,
-            (a.speed.raw() as i64 * 100 + 32_768) / 65_536,
-            (a.radius.raw() as i64 * 100 + 32_768) / 65_536,
-            a.deposit_unit,
-            a.deposit.floor,
-            a.deposit.nominal,
-            a.deposit.ceiling,
-            a.deposit.burst_ticks,
-            mix(&a, false, 0), mix(&a, false, 1), mix(&a, false, 2), mix(&a, false, 3), mix(&a, false, 4),
-            a.consume_unit,
-            a.consume.floor,
-            a.consume.nominal,
-            a.consume.ceiling,
-            a.consume.burst_ticks,
-            mix(&a, true, 0), mix(&a, true, 1), mix(&a, true, 2), mix(&a, true, 3), mix(&a, true, 4),
-            a.fantasy,
-        );
-    }
-    s.push_str("]);\n\n");
-
-    s.push_str("pub const TERRAIN: PerElement<TerrainAttrs> = PerElement([\n");
-    for e in Element::ALL {
-        let a = t.terrain[e];
-        let _ = write!(
-            s,
-            "    // {}\n    TerrainAttrs {{ influx: {}, decay: {}, generate: {}, overcome: {}, \
-             diffuse: {}, ev_threshold: {}, ev_window: {}, wild: {}, wild_cap: {} }},\n",
-            e.name(),
-            a.influx, a.decay, a.generate, a.overcome,
-            a.diffuse, a.ev_threshold, a.ev_window, a.wild, a.wild_cap,
-        );
-    }
-    s.push_str("]);\n");
-
-    std::fs::write(&path, s)?;
-    Ok(path)
-}
-
-fn mix(a: &pentagram::race::RaceAttrs, consume: bool, i: usize) -> u16 {
-    let c = pentagram::race::Channel::ALL[i];
-    if consume {
-        a.consume_mix.permille(c)
-    } else {
-        a.deposit_mix.permille(c)
-    }
 }

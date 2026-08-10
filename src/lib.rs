@@ -36,6 +36,7 @@ pub mod race;
 pub mod rand;
 pub mod replay;
 pub mod terrain;
+pub mod tuning;
 pub mod world;
 
 pub use element::{Element, PerElement};
