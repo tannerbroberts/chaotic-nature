@@ -308,34 +308,41 @@ fn ecolor(e: Element) -> Color32 {
 
 const GROUND: Color32 = Color32::from_rgb(16, 18, 24);
 
-/// A cell's colour: the five saturations blended, brightness by total. Mixed
-/// ground reads as mixed — a Fire/Earth frontier is visibly ochre.
+/// Saturation buckets, shared by rendering and (eventually) tile-asset
+/// mapping: a cell is its strongest element at one of four strengths. This is
+/// the exact scheme a Godot TileMap would use — 5 elements × 4 buckets is 20
+/// tiles, with boundaries drawn by autotiling, not by unique art per
+/// combination.
+const BUCKETS: [u16; 4] = [300, 4_000, 14_000, 32_000];
+
+fn bucket(sat: u16) -> Option<usize> {
+    if sat < BUCKETS[0] {
+        return None;
+    }
+    Some(match sat {
+        s if s >= BUCKETS[3] => 3,
+        s if s >= BUCKETS[2] => 2,
+        s if s >= BUCKETS[1] => 1,
+        _ => 0,
+    })
+}
+
+/// A cell's colour: the *dominant* element's hue at its bucket's brightness.
+/// Blending was tried and rejected — averaging five hues turns every frontier
+/// brown. Dominance + stepped brightness reads as terrain: patches have edges,
+/// and a strengthening biome visibly changes level.
 fn cell_color(w: &World, cell: usize) -> Color32 {
-    let mut total: u32 = 0;
-    let mut r: u32 = 0;
-    let mut g: u32 = 0;
-    let mut b: u32 = 0;
-    for e in Element::ALL {
-        let s = w.terrain.sat[e.index()][cell] as u32;
-        if s == 0 {
-            continue;
-        }
-        total += s;
-        let c = RGB[e];
-        r += s * c.0 as u32;
-        g += s * c.1 as u32;
-        b += s * c.2 as u32;
-    }
-    if total < 200 {
+    let (el, sat) = w.terrain.dominant(cell);
+    let Some(level) = bucket(sat) else {
         return GROUND;
-    }
-    // Brightness: noticeable at a whisper, saturated well below the cap.
-    let bright = 30 + (total.min(45_000) * 195 / 45_000);
-    let scale = |v: u32| -> u8 {
-        let base = (v / total) * bright / 255;
-        (base + GROUND.r() as u32 / 2).min(255) as u8
     };
-    Color32::from_rgb(scale(r), scale(g), scale(b))
+    let bright: u32 = [80, 130, 185, 245][level];
+    let c = RGB[el];
+    let g = GROUND;
+    let mix = |cv: u8, gv: u8| -> u8 {
+        ((cv as u32 * bright + gv as u32 * (255 - bright)) / 255) as u8
+    };
+    Color32::from_rgb(mix(c.0, g.r()), mix(c.1, g.g()), mix(c.2, g.b()))
 }
 
 // ----------------------------------------------------------------------
@@ -443,9 +450,9 @@ impl App {
                     ui.add_space(8.0);
                     self.events_card(ui);
                     ui.add_space(8.0);
-                    self.population_card(ui);
-                    ui.add_space(8.0);
                     self.knobs_card(ui);
+                    ui.add_space(8.0);
+                    self.population_card(ui);
                     ui.add_space(8.0);
                     self.legend_card(ui);
                 });
@@ -567,10 +574,12 @@ impl App {
     }
 
     fn knobs_card(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new(RichText::new("Knobs").strong())
-            .default_open(false)
+        egui::CollapsingHeader::new(
+            RichText::new("Tuning — speed, lifespan, deposition, consumption…").strong(),
+        )
+            .default_open(true)
             .show(ui, |ui| {
-                ui.label(RichText::new("Every value edits the running world. Hover any slider for what it does.").weak());
+                ui.label(RichText::new("Pick a race, drag a slider — the running world updates. Hover any slider for what it does.").weak());
                 ui.horizontal(|ui| {
                     for e in Element::ALL {
                         let sel = self.knob_element == e;
@@ -628,7 +637,7 @@ impl App {
             .default_open(self.show_help)
             .show(ui, |ui| {
                 self.show_help = false;
-                ui.label("The ground glows with elemental saturation — the land remembering what lived and died on it. Colours blend where elements meet.");
+                ui.label("Each tile shows its strongest element at one of four strength levels — the land remembering what lived and died on it. A biome levelling up visibly steps brighter.");
                 ui.horizontal_wrapped(|ui| {
                     for e in Element::ALL {
                         ui.label(RichText::new(format!("■ {}", e.name())).color(ecolor(e)));
@@ -663,7 +672,9 @@ impl App {
                 for (i, px) in img.pixels.iter_mut().enumerate() {
                     *px = cell_color(&self.w, i);
                 }
-                let opts = egui::TextureOptions::LINEAR;
+                // NEAREST, not LINEAR: cells are tiles, and tiles have edges.
+                // Linear filtering turned the whole field into fog.
+                let opts = egui::TextureOptions::NEAREST;
                 match &mut self.terrain_tex {
                     Some(t) => t.set(img, opts),
                     None => self.terrain_tex = Some(ctx.load_texture("terrain", img, opts)),
