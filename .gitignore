@@ -1,17 +1,24 @@
-# Godot 4+ specific ignores
-.godot/
+# --- Rust ---
+/target/
+**/*.rs.bk
 
-# Godot-specific ignores
+# --- Godot 4+ ---
+client/.godot/
 *.translation
-
-# Imported textures and other resources
 .import/
 
-# Mono-specific ignores
+# Mono
 .mono/
 data_*/
 mono_crash.*.json
 
-# OS-specific
+# --- build output ---
+# Godot web exports are ~36 MB of regenerable artifacts. They were tracked
+# before the consolidation; `git rm --cached` untracked them without deleting
+# anything from disk. History still has them at eddf481.
+legacy/exports/
+**/node_modules/
+
+# --- OS ---
 .DS_Store
 Thumbs.db
