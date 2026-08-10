@@ -61,11 +61,79 @@
     "WELCOME": {
       "id": 13,
       "direction": "server_to_client",
-      "description": "Sent to the connecting client with their assigned player ID and spawn tile.",
+      "description": "Sent to the connecting client with their assigned player ID. Player starts in the lobby.",
       "fields": [
-        { "name": "player_id", "type": "uint16" },
-        { "name": "tile_x", "type": "int16" },
-        { "name": "tile_y", "type": "int16" }
+        { "name": "player_id", "type": "uint16" }
+      ]
+    },
+    "JOIN_ROOM": {
+      "id": 3,
+      "direction": "client_to_server",
+      "description": "Client requests to join a specific room by ID string.",
+      "fields": [
+        { "name": "room_id_length", "type": "uint8" },
+        { "name": "room_id", "type": "string", "comment": "UTF-8 bytes, length given by room_id_length" }
+      ]
+    },
+    "LEAVE_ROOM": {
+      "id": 4,
+      "direction": "client_to_server",
+      "description": "Client requests to leave their current room and return to the lobby.",
+      "fields": []
+    },
+    "TRANSFER_REQUEST": {
+      "id": 5,
+      "direction": "client_to_server",
+      "description": "Client requests to transfer to an adjacent room via a specific exit direction.",
+      "fields": [
+        { "name": "direction_length", "type": "uint8" },
+        { "name": "direction", "type": "string", "comment": "UTF-8 string: north, south, east, or west" }
+      ]
+    },
+    "ROOM_LIST": {
+      "id": 20,
+      "direction": "server_to_client",
+      "description": "List of all rooms with their player counts, sent on connect and on changes.",
+      "fields": [
+        { "name": "room_count", "type": "uint8" },
+        { "name": "rooms", "type": "array", "element": {
+          "fields": [
+            { "name": "room_id_length", "type": "uint8" },
+            { "name": "room_id", "type": "string" },
+            { "name": "player_count", "type": "uint16" },
+            { "name": "grid_x", "type": "int8" },
+            { "name": "grid_y", "type": "int8" }
+          ]
+        }}
+      ]
+    },
+    "ROOM_JOINED": {
+      "id": 21,
+      "direction": "server_to_client",
+      "description": "Confirms the player has entered a room, with spawn position and existing players.",
+      "fields": [
+        { "name": "room_id_length", "type": "uint8" },
+        { "name": "room_id", "type": "string" },
+        { "name": "spawn_x", "type": "int16" },
+        { "name": "spawn_y", "type": "int16" },
+        { "name": "player_count", "type": "uint16" },
+        { "name": "players", "type": "array", "element": {
+          "fields": [
+            { "name": "player_id", "type": "uint16" },
+            { "name": "tile_x", "type": "int16" },
+            { "name": "tile_y", "type": "int16" }
+          ]
+        }}
+      ]
+    },
+    "ROOM_TRANSFER": {
+      "id": 22,
+      "direction": "server_to_client",
+      "description": "Notifies a player that they are being transferred to another room.",
+      "fields": [
+        { "name": "dest_room_id_length", "type": "uint8" },
+        { "name": "dest_room_id", "type": "string" },
+        { "name": "transfer_time_ms", "type": "uint16" }
       ]
     }
   }

@@ -15,10 +15,16 @@ const HEADER_SIZE := 3
 enum Msg {
 	MOVE_TO      = 1,
 	TOGGLE_RUN   = 2,
+	JOIN_ROOM    = 3,
+	LEAVE_ROOM   = 4,
+	TRANSFER_REQ = 5,
 	TICK_STATE   = 10,
 	PLAYER_JOIN  = 11,
 	PLAYER_LEAVE = 12,
 	WELCOME      = 13,
+	ROOM_LIST    = 20,
+	ROOM_JOINED  = 21,
+	ROOM_TRANSFER = 22,
 }
 
 # ── Encode (client → server) ────────────────────────────────────────────────
@@ -39,6 +45,40 @@ static func encode_toggle_run(running: bool) -> PackedByteArray:
 	buf.put_u16(1)
 	buf.put_u8(1 if running else 0)
 	return buf.data_array
+
+static func encode_join_room(room_id: String) -> PackedByteArray:
+	var room_bytes := room_id.to_utf8_buffer()
+	var buf := StreamPeerBuffer.new()
+	buf.big_endian = false
+	buf.put_u8(Msg.JOIN_ROOM)
+	buf.put_u16(1 + room_bytes.size())  # u8 len + string bytes
+	buf.put_u8(room_bytes.size())
+	buf.put_data(room_bytes)
+	return buf.data_array
+
+static func encode_leave_room() -> PackedByteArray:
+	var buf := StreamPeerBuffer.new()
+	buf.big_endian = false
+	buf.put_u8(Msg.LEAVE_ROOM)
+	buf.put_u16(0)
+	return buf.data_array
+
+static func encode_transfer_request(direction: String) -> PackedByteArray:
+	var dir_bytes := direction.to_utf8_buffer()
+	var buf := StreamPeerBuffer.new()
+	buf.big_endian = false
+	buf.put_u8(Msg.TRANSFER_REQ)
+	buf.put_u16(1 + dir_bytes.size())
+	buf.put_u8(dir_bytes.size())
+	buf.put_data(dir_bytes)
+	return buf.data_array
+
+# ── String helpers ───────────────────────────────────────────────────────────
+
+static func _read_string(buf: StreamPeerBuffer) -> String:
+	var len := buf.get_u8()
+	var bytes := buf.get_data(len)
+	return (bytes[1] as PackedByteArray).get_string_from_utf8()
 
 # ── Decode (server → client) ────────────────────────────────────────────────
 
@@ -62,12 +102,8 @@ static func decode(data: PackedByteArray) -> Message:
 	match type:
 		Msg.WELCOME:
 			var player_id := buf.get_u16()
-			var tile_x := buf.get_16()
-			var tile_y := buf.get_16()
 			return Message.new(type, {
 				"player_id": player_id,
-				"tile_x": tile_x,
-				"tile_y": tile_y,
 			})
 		Msg.TICK_STATE:
 			var tick_number := buf.get_u32()
@@ -101,6 +137,51 @@ static func decode(data: PackedByteArray) -> Message:
 			var player_id := buf.get_u16()
 			return Message.new(type, {
 				"player_id": player_id,
+			})
+		Msg.ROOM_LIST:
+			var room_count := buf.get_u8()
+			var rooms: Array[Dictionary] = []
+			for i in room_count:
+				var rid := _read_string(buf)
+				var player_count := buf.get_u16()
+				var grid_x := buf.get_8()
+				var grid_y := buf.get_8()
+				rooms.append({
+					"room_id": rid,
+					"player_count": player_count,
+					"grid_x": grid_x,
+					"grid_y": grid_y,
+				})
+			return Message.new(type, {
+				"rooms": rooms,
+			})
+		Msg.ROOM_JOINED:
+			var rid := _read_string(buf)
+			var spawn_x := buf.get_16()
+			var spawn_y := buf.get_16()
+			var player_count := buf.get_u16()
+			var players: Array[Dictionary] = []
+			for i in player_count:
+				var pid := buf.get_u16()
+				var tx := buf.get_16()
+				var ty := buf.get_16()
+				players.append({
+					"player_id": pid,
+					"tile_x": tx,
+					"tile_y": ty,
+				})
+			return Message.new(type, {
+				"room_id": rid,
+				"spawn_x": spawn_x,
+				"spawn_y": spawn_y,
+				"players": players,
+			})
+		Msg.ROOM_TRANSFER:
+			var dest_room_id := _read_string(buf)
+			var transfer_time_ms := buf.get_u16()
+			return Message.new(type, {
+				"dest_room_id": dest_room_id,
+				"transfer_time_ms": transfer_time_ms,
 			})
 		_:
 			# Unknown message — skip payload (forward compat).

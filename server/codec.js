@@ -38,6 +38,26 @@ function writeUint32(view, offset, value) {
   return offset + 4;
 }
 
+function writeInt8(view, offset, value) {
+  view.setInt8(offset, value);
+  return offset + 1;
+}
+
+/** Write a length-prefixed UTF-8 string (u8 length + chars). */
+function writeString(view, offset, str) {
+  const bytes = Buffer.from(str, 'utf8');
+  offset = writeUint8(view, offset, bytes.length);
+  for (let i = 0; i < bytes.length; i++) {
+    view.setUint8(offset + i, bytes[i]);
+  }
+  return offset + bytes.length;
+}
+
+/** Byte size of a length-prefixed string. */
+function stringSize(str) {
+  return 1 + Buffer.byteLength(str, 'utf8');
+}
+
 // ── Readers ──────────────────────────────────────────────────────────────────
 
 function readUint8(view, offset) {
@@ -54,6 +74,17 @@ function readUint16(view, offset) {
 
 function readUint32(view, offset) {
   return { value: view.getUint32(offset, true), offset: offset + 4 };
+}
+
+function readInt8(view, offset) {
+  return { value: view.getInt8(offset), offset: offset + 1 };
+}
+
+/** Read a length-prefixed UTF-8 string (u8 length + chars). */
+function readString(view, offset) {
+  const len = view.getUint8(offset); offset += 1;
+  const bytes = new Uint8Array(view.buffer, view.byteOffset + offset, len);
+  return { value: Buffer.from(bytes).toString('utf8'), offset: offset + len };
 }
 
 // ── Encode ───────────────────────────────────────────────────────────────────
@@ -155,21 +186,89 @@ function encodePlayerLeave(playerId) {
 
 /**
  * Encode a WELCOME message (server → client).
+ * Now only contains the player ID — player starts in lobby, not in a room.
  * @param {number} playerId
- * @param {number} tileX
- * @param {number} tileY
  * @returns {ArrayBuffer}
  */
-function encodeWelcome(playerId, tileX, tileY) {
-  const payloadSize = 6;
+function encodeWelcome(playerId) {
+  const payloadSize = 2;
   const buf = new ArrayBuffer(HEADER_SIZE + payloadSize);
   const v = new DataView(buf);
   let o = 0;
   o = writeUint8(v, o, 13);
   o = writeUint16(v, o, payloadSize);
   o = writeUint16(v, o, playerId);
-  o = writeInt16(v, o, tileX);
-  o = writeInt16(v, o, tileY);
+  return buf;
+}
+
+/**
+ * Encode a ROOM_LIST message (server → client).
+ * @param {{ id: string, playerCount: number, gridX: number, gridY: number }[]} rooms
+ * @returns {ArrayBuffer}
+ */
+function encodeRoomList(rooms) {
+  let payloadSize = 1; // u8 room count
+  for (const r of rooms) {
+    payloadSize += stringSize(r.id) + 2 + 1 + 1; // string + u16 count + i8 gx + i8 gy
+  }
+  const buf = new ArrayBuffer(HEADER_SIZE + payloadSize);
+  const v = new DataView(buf);
+  let o = 0;
+  o = writeUint8(v, o, 20);
+  o = writeUint16(v, o, payloadSize);
+  o = writeUint8(v, o, rooms.length);
+  for (const r of rooms) {
+    o = writeString(v, o, r.id);
+    o = writeUint16(v, o, r.playerCount);
+    o = writeInt8(v, o, r.gridX);
+    o = writeInt8(v, o, r.gridY);
+  }
+  return buf;
+}
+
+/**
+ * Encode a ROOM_JOINED message (server → client).
+ * @param {string} roomId
+ * @param {number} spawnX
+ * @param {number} spawnY
+ * @param {{ id: number, tileX: number, tileY: number }[]} existingPlayers
+ * @returns {ArrayBuffer}
+ */
+function encodeRoomJoined(roomId, spawnX, spawnY, existingPlayers) {
+  const perPlayer = 6; // u16 + i16 + i16
+  const payloadSize = stringSize(roomId) + 2 + 2 + 2 + existingPlayers.length * perPlayer;
+  const buf = new ArrayBuffer(HEADER_SIZE + payloadSize);
+  const v = new DataView(buf);
+  let o = 0;
+  o = writeUint8(v, o, 21);
+  o = writeUint16(v, o, payloadSize);
+  o = writeString(v, o, roomId);
+  o = writeInt16(v, o, spawnX);
+  o = writeInt16(v, o, spawnY);
+  o = writeUint16(v, o, existingPlayers.length);
+  for (const p of existingPlayers) {
+    o = writeUint16(v, o, p.id);
+    o = writeInt16(v, o, p.tileX);
+    o = writeInt16(v, o, p.tileY);
+  }
+  return buf;
+}
+
+/**
+ * Encode a ROOM_TRANSFER message (server → client).
+ * @param {string} destRoomId
+ * @param {number} transferTimeMs
+ * @returns {ArrayBuffer}
+ */
+function encodeRoomTransfer(destRoomId, transferTimeMs) {
+  const payloadSize = stringSize(destRoomId) + 2;
+  const buf = new ArrayBuffer(HEADER_SIZE + payloadSize);
+  const v = new DataView(buf);
+  let o = 0;
+  o = writeUint8(v, o, 22);
+  o = writeUint16(v, o, payloadSize);
+  o = writeString(v, o, destRoomId);
+  o = writeUint16(v, o, transferTimeMs);
   return buf;
 }
 
@@ -223,9 +322,49 @@ function decode(data) {
     }
     case 13: { // WELCOME
       const rId = readUint16(v, o);  o = rId.offset;
-      const rX = readInt16(v, o);    o = rX.offset;
-      const rY = readInt16(v, o);    o = rY.offset;
-      return { type, payload: { playerId: rId.value, tileX: rX.value, tileY: rY.value } };
+      return { type, payload: { playerId: rId.value } };
+    }
+    case 3: { // JOIN_ROOM
+      const rRoom = readString(v, o); o = rRoom.offset;
+      return { type, payload: { roomId: rRoom.value } };
+    }
+    case 4: { // LEAVE_ROOM
+      return { type, payload: {} };
+    }
+    case 5: { // TRANSFER_REQUEST
+      const rDir = readString(v, o); o = rDir.offset;
+      return { type, payload: { direction: rDir.value } };
+    }
+    case 20: { // ROOM_LIST
+      const rCount = readUint8(v, o); o = rCount.offset;
+      const rooms = [];
+      for (let i = 0; i < rCount.value; i++) {
+        const rRid = readString(v, o);  o = rRid.offset;
+        const rPc = readUint16(v, o);   o = rPc.offset;
+        const rGx = readInt8(v, o);     o = rGx.offset;
+        const rGy = readInt8(v, o);     o = rGy.offset;
+        rooms.push({ roomId: rRid.value, playerCount: rPc.value, gridX: rGx.value, gridY: rGy.value });
+      }
+      return { type, payload: { rooms } };
+    }
+    case 21: { // ROOM_JOINED
+      const rRid = readString(v, o);  o = rRid.offset;
+      const rSx = readInt16(v, o);    o = rSx.offset;
+      const rSy = readInt16(v, o);    o = rSy.offset;
+      const rPc = readUint16(v, o);   o = rPc.offset;
+      const players = [];
+      for (let i = 0; i < rPc.value; i++) {
+        const rPid = readUint16(v, o); o = rPid.offset;
+        const rPx = readInt16(v, o);   o = rPx.offset;
+        const rPy = readInt16(v, o);   o = rPy.offset;
+        players.push({ playerId: rPid.value, tileX: rPx.value, tileY: rPy.value });
+      }
+      return { type, payload: { roomId: rRid.value, spawnX: rSx.value, spawnY: rSy.value, players } };
+    }
+    case 22: { // ROOM_TRANSFER
+      const rDest = readString(v, o);  o = rDest.offset;
+      const rTime = readUint16(v, o);  o = rTime.offset;
+      return { type, payload: { destRoomId: rDest.value, transferTimeMs: rTime.value } };
     }
     default:
       // Unknown message — skip payload (TLV forward compatibility).
@@ -241,5 +380,8 @@ module.exports = {
   encodePlayerJoin,
   encodePlayerLeave,
   encodeWelcome,
+  encodeRoomList,
+  encodeRoomJoined,
+  encodeRoomTransfer,
   decode,
 };
