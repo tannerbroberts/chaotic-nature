@@ -16,43 +16,59 @@ not own a tick clock, pathfinding, or any state. Where the two projects
 disagreed about who decides what is true, the sim won and the loser is in
 `legacy/` with a note explaining what replaced it.
 
-## Stage 0 — the determinism skeleton
+## Playing it
 
-Everything else is downstream of this crate being correct, so it is small, has
-zero dependencies, and is tested harder than its size suggests.
+`chaos` opens on the **soul view**: the whole territory as a living heat map —
+five saturations churning under climate hotspots, succession, erosion and
+diffusion — with wildlife drifting over it and **incarnation events** marked
+`✶`. Terrain-gated events open where an element's saturation crosses its
+threshold; wild sparks (the lightning strike) can open anywhere, which is what
+keeps every race joinable no matter what the map is doing.
 
-**Exit condition, met:** 10 000 ticks replay bit-identically from
-`(seed, input_log)`, asserted at *every* tick rather than only at the end.
-
-## The loop
+Pick an event, press enter, and you are born there as that race — the sim slows
+to near-real-time, arrows steer, and the HUD shows your body burning through
+its lifespan. Die (or `esc` to release the body — it wanders on as wildlife)
+and you are a soul again, choosing another moment. Fire lives eight minutes;
+Earth a fortnight. The circle of life is the whole game loop, and it runs
+without you: unclaimed events become wildlife births, so an empty server grows
+life on its own.
 
 ```
-chaos                  live view — change a number, watch what the world does
+soul view    ↑↓ choose event · enter incarnate · 1-5 next of race · s knobs
+incarnated   ↑↓←→ steer · esc release the body
+everywhere   space pause · . step 1 sim minute · < > speed · q quit
+```
+
+## Tuning it
+
+```
+chaos                  the game + the instrument, in one screen
 chaos watch            same, rebuilding whenever src/ changes
-chaos edit             open the tuning table
+chaos edit             open the tuning table in $EDITOR
 chaos verify           the determinism exit condition
 chaos soak [ticks]     long headless run + per-race report
-chaos test             full suite (82 tests)
+chaos test             full suite (110 tests)
 ```
 
-`chaos` lives in `~/.local/bin` and points at this directory; set `CHAOS_ROOT`
-to move it. Flags pass through: `chaos --speed 600 --pop 40 --size 128`.
+`s` flips to the knob table: three pages (body & rates · channel mix ·
+terrain & incarnation), every value editable while the world runs, `T` writes
+the current tables to `src/race.tuned.rs`. Shipped values live in `src/race.rs`
+and `src/terrain.rs`. Flags set starting conditions only:
+`chaos --speed 600 --pop 40 --size 128`.
 
-**Everything tunable is in `src/race.rs`.** One table, five rows. Lifespan,
-speed, radius, deposit and consume units, rate bands, and channel mixes.
+## Stage — S1 landed
 
-> Honest caveat for Stage 0: the grid in the live view shows diffusion, not
-> ecology — there is no terrain to be attracted to and no feeding yet, so
-> bodies mostly wander and bump. The readouts that *are* meaningful right now
-> are the population sparklines and the governor states. The spatial view
-> starts earning its place at S1 (terrain) and becomes the main instrument at
-> S2 (plants and animals).
+Stage 0 (determinism skeleton) and S1 (terrain field + incarnation events) are
+in. **Exit conditions, met:** 10 000 ticks replay bit-identically from
+`(seed, input_log)` asserted at every tick — now with the full terrain field
+and event stream hashed per tick; no monoculture is an absorbing state; an
+empty server self-populates.
 
 ## The invariants
 
 | | | Where it lives |
 |---|---|---|
-| I | Bounded propagation — nothing acts instantly at a distance | *S1: terrain diffusion cap* |
+| I | Bounded propagation — nothing acts instantly at a distance | `terrain.rs` — diffusion reaches 1 cell/tick by construction |
 | II | No floating point in simulation state | `fx.rs` |
 | III | Randomness is stateless | `rand.rs` |
 | IV | Iteration order is defined | `world.rs`, `element::PerElement` |
@@ -60,11 +76,15 @@ speed, radius, deposit and consume units, rate bands, and channel mixes.
 | VI | Every tick is reproducible | `replay.rs` |
 | VII | Bounded churn — rates are floored and capped | `governor.rs` |
 
-Invariant I has no home yet because there is no field to diffuse. It arrives
-with the terrain grid at S1, and the band-width arithmetic that depends on it
-arrives at S3.
+The band-width arithmetic that leans on Invariant I arrives at S3; the bound
+itself is already enforced — the diffusion stencil only reaches its four
+neighbours, and no terrain operator acts at a distance.
 
-### Three things that are easy to break later
+### Four things that are easy to break later
+
+**The terrain operator order is a wire format.** Per terrain tick: deposit →
+consume → overcome → generate → influx → decay → diffuse, elements in ring
+order, cells row-major, in place. Same rule as the phase order below.
 
 **Overflow behaviour must match across profiles.** Rust panics on overflow in
 debug and wraps in release — two different simulations from one source tree.

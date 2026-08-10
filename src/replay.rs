@@ -126,6 +126,18 @@ pub fn scripted_log(seed: u64, ticks: u64, live_ids: u32) -> InputLog {
                 kind: CmdKind::Kill,
             });
         }
+        // Occasional incarnation claim on a guessed event id. Most are
+        // deterministic no-ops; the ones that land exercise the claim path
+        // under replay, which is exactly where a divergence would hide.
+        if rand_below(seed, t, 10, Channel::Events, 70) == 0 {
+            log.push(Command {
+                tick: t,
+                entity: 0,
+                kind: CmdKind::Incarnate {
+                    event: 1 + rand_below(seed, t, 11, Channel::Events, 60),
+                },
+            });
+        }
     }
     log.finalize();
     log

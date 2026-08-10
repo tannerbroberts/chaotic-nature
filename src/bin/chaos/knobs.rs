@@ -13,23 +13,28 @@
 use pentagram::element::{Element, PerElement};
 use pentagram::fx::Fx;
 use pentagram::race::{Channel, Edge, RaceAttrs, TICKS_PER_DAY, TICKS_PER_MINUTE, RACES};
+use pentagram::terrain::{TerrainAttrs, TERRAIN};
 
 /// Everything the live view can change, in one struct.
 ///
-/// `races` is the real tuning table and goes straight into the world.
-/// `restock` and `wander` are the *view's* knobs, not the simulation's: Stage 0
-/// has no reproduction and no goals, so without a hand on the tiller the map
-/// empties out and the survivors travel in straight lines. Both are applied as
-/// ordinary input commands, which is exactly what a player would be.
+/// `races` and `terrain` are the real tuning tables and go straight into the
+/// world. `restock` is the *view's* knob, not the simulation's: without a hand
+/// on the tiller a young world empties out. It is applied as ordinary input
+/// commands, which is exactly what a player would be.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Tuning {
     pub races: PerElement<RaceAttrs>,
+    pub terrain: PerElement<TerrainAttrs>,
     pub restock: PerElement<u32>,
 }
 
 impl Tuning {
     pub fn new(per_race: u32) -> Tuning {
-        Tuning { races: RACES, restock: PerElement::filled(per_race) }
+        Tuning {
+            races: RACES,
+            terrain: TERRAIN,
+            restock: PerElement::filled(per_race),
+        }
     }
 }
 
@@ -239,9 +244,49 @@ static MIX: [Knob; 10] = [
     mix_knobs!("con existence", consume_mix, Channel::OnExistence, "taken by being present"),
 ];
 
+static TERRAIN_KNOBS: [Knob; 9] = [
+    knob!("influx", Fmt::Int, Step::Scale, 0, 100_000,
+          "saturation seeping in per terrain tick at each climate hotspot — how strong this biome's geography is",
+          |t, e| t.terrain[e].influx as i64,
+          |t, e, v| t.terrain[e].influx = v as u32),
+    knob!("decay ‰", Fmt::Permille, Step::Add(1), 0, 1000,
+          "passive forgetting per terrain tick; low values make scars persist for days",
+          |t, e| t.terrain[e].decay as i64,
+          |t, e, v| t.terrain[e].decay = v as u16),
+    knob!("generate ‰", Fmt::Permille, Step::Add(1), 0, 1000,
+          "ring maturation: how fast this element becomes the next — THE succession speed knob",
+          |t, e| t.terrain[e].generate as i64,
+          |t, e, v| t.terrain[e].generate = v as u16),
+    knob!("overcome ‰", Fmt::Permille, Step::Add(1), 0, 1000,
+          "star erosion: how hard this element's presence erodes the element it suppresses",
+          |t, e| t.terrain[e].overcome as i64,
+          |t, e, v| t.terrain[e].overcome = v as u16),
+    knob!("diffuse ‰", Fmt::Permille, Step::Add(10), 0, 1000,
+          "share spread to the four neighbours per terrain tick — reach is hard-capped at one cell",
+          |t, e| t.terrain[e].diffuse as i64,
+          |t, e, v| t.terrain[e].diffuse = v as u16),
+    knob!("event gate", Fmt::Int, Step::Scale, 0, 65_535,
+          "minimum saturation for this element to host a terrain-gated incarnation event",
+          |t, e| t.terrain[e].ev_threshold as i64,
+          |t, e, v| t.terrain[e].ev_threshold = v as u16),
+    knob!("event window", Fmt::Ticks, Step::Scale, 50, 1_000_000,
+          "how long an incarnation event stays open — Fire's moment is brief, Earth's builds for ages",
+          |t, e| t.terrain[e].ev_window as i64,
+          |t, e, v| t.terrain[e].ev_window = v as u32),
+    knob!("wild ‰", Fmt::Permille, Step::Add(5), 0, 1000,
+          "chance per terrain tick of a wild event anywhere — the lightning strike; the floor under extinction",
+          |t, e| t.terrain[e].wild as i64,
+          |t, e, v| t.terrain[e].wild = v as u16),
+    knob!("wild cap", Fmt::Int, Step::Add(5), 0, 500,
+          "wildlife bodies the world sustains from unclaimed events; expiry only births below this",
+          |t, e| t.terrain[e].wild_cap as i64,
+          |t, e, v| t.terrain[e].wild_cap = v as u32),
+];
+
 pub static PAGES: &[Page] = &[
     Page { title: "body & rates", knobs: &BODY },
     Page { title: "channel mix ‰  (edits rebalance the rest to keep the sum at 1000)", knobs: &MIX },
+    Page { title: "terrain & incarnation", knobs: &TERRAIN_KNOBS },
 ];
 
 // ----------------------------------------------------------------------

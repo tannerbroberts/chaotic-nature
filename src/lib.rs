@@ -35,6 +35,7 @@ pub mod input;
 pub mod race;
 pub mod rand;
 pub mod replay;
+pub mod terrain;
 pub mod world;
 
 pub use element::{Element, PerElement};
@@ -43,4 +44,5 @@ pub use governor::{Governor, Grant};
 pub use input::{CmdKind, Command, InputLog};
 pub use race::{attrs, RaceAttrs, RateBand, TERRAIN_PERIOD};
 pub use replay::{record, verify, Divergence, Trace};
-pub use world::World;
+pub use terrain::{Terrain, TerrainAttrs, TERRAIN};
+pub use world::{Event, World};

@@ -30,6 +30,11 @@ pub enum Key {
 /// restoring is a byte-for-byte undo rather than a guess like `stty sane`.
 pub struct Term {
     saved: Option<String>,
+    /// Asking `stty` for the window size means forking a process, which is far
+    /// too expensive to do on every one of twenty frames a second. Once a
+    /// second is plenty for catching a resize.
+    size: std::cell::Cell<Option<(usize, usize)>>,
+    stale: std::cell::Cell<u32>,
 }
 
 impl Term {
@@ -41,16 +46,24 @@ impl Term {
         // rescue a wedged view.
         let _ = stty(&["-icanon", "-echo", "min", "1", "time", "0"]);
         print!("\x1b[?1049h\x1b[?25l\x1b[2J");
-        Term { saved }
+        Term { saved, size: std::cell::Cell::new(None), stale: std::cell::Cell::new(0) }
     }
 
-    /// Rows and columns, asked fresh each frame so resizing the window works
-    /// without a SIGWINCH handler.
+    /// Rows and columns, re-asked about once a second, so resizing the window
+    /// works without a SIGWINCH handler and without a fork per frame.
     pub fn size(&self) -> Option<(usize, usize)> {
+        let stale = self.stale.get();
+        self.stale.set(stale.wrapping_add(1));
+        if !stale.is_multiple_of(20) {
+            if let Some(s) = self.size.get() {
+                return Some(s);
+            }
+        }
         let out = stty(&["size"])?;
         let mut it = out.split_whitespace();
         let rows = it.next()?.parse().ok()?;
         let cols = it.next()?.parse().ok()?;
+        self.size.set(Some((rows, cols)));
         Some((rows, cols))
     }
 }

@@ -26,6 +26,13 @@ pub enum Channel {
     Crit = 5,
     SpawnPlacement = 6,
     Governor = 7,
+    /// Climate geography: where an element's influx hotspots sit.
+    Climate = 8,
+    /// Incarnation events: wild sparks, and which eligible cell hosts a
+    /// terrain-gated event.
+    Events = 9,
+    /// Where floor-churn (deposition nobody asked for) lands on the map.
+    WildChurn = 10,
     /// Reserved for ad-hoc debugging. Never read by shipped simulation code.
     Debug = 255,
 }

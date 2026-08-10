@@ -21,6 +21,10 @@ pub enum CmdKind {
     SetHeading { dir: V2 },
     Spawn { element: Element, at: V2 },
     Kill,
+    /// Claim an open incarnation event by id. The `entity` field is unused —
+    /// a soul has no entity yet; that is the point of the command. A claim on
+    /// an event that has closed or never existed is a deterministic no-op.
+    Incarnate { event: u32 },
 }
 
 impl CmdKind {
@@ -30,6 +34,7 @@ impl CmdKind {
             CmdKind::SetHeading { .. } => 0,
             CmdKind::Spawn { .. } => 1,
             CmdKind::Kill => 2,
+            CmdKind::Incarnate { .. } => 3,
         }
     }
 }
@@ -124,6 +129,9 @@ impl InputLog {
                     out.extend_from_slice(&at.y.raw().to_le_bytes());
                 }
                 CmdKind::Kill => {}
+                CmdKind::Incarnate { event } => {
+                    out.extend_from_slice(&event.to_le_bytes());
+                }
             }
         }
         out
@@ -158,6 +166,7 @@ impl InputLog {
                     }
                 }
                 2 => CmdKind::Kill,
+                3 => CmdKind::Incarnate { event: r.u32()? },
                 t => return Err(LogError::BadTag(t)),
             };
             cmds.push(Command { tick, entity, kind });
@@ -254,6 +263,19 @@ mod tests {
     #[test]
     fn bytes_round_trip_exactly() {
         let l = sample();
+        let back = InputLog::from_bytes(&l.to_bytes()).expect("round trip");
+        assert_eq!(back.as_slice(), l.as_slice());
+    }
+
+    #[test]
+    fn incarnate_round_trips() {
+        let mut l = InputLog::new();
+        l.push(Command {
+            tick: 42,
+            entity: 0,
+            kind: CmdKind::Incarnate { event: 0xDEAD_BEEF },
+        });
+        l.finalize();
         let back = InputLog::from_bytes(&l.to_bytes()).expect("round trip");
         assert_eq!(back.as_slice(), l.as_slice());
     }

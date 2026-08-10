@@ -12,9 +12,36 @@ use crate::hash::{Hashable, Hasher};
 use crate::input::{CmdKind, Command, InputLog};
 use crate::race::{attrs, Channel as DepChannel, RaceAttrs, MILLI, RACES, TERRAIN_PERIOD};
 use crate::rand::{rand_signed, Channel};
+use crate::terrain::{Terrain, TerrainAttrs, TERRAIN};
 
 /// Per-tick positional noise, so entities do not travel on perfect rails.
 pub const JITTER: Fx = Fx::ratio(1, 400);
+
+/// Most incarnation events one element may have open at once. Keeps the sky
+/// legible: a soul chooses among a handful of moments, not a wall of them.
+pub const EVENTS_CAP: usize = 4;
+
+/// An open incarnation event: a place and a window in which a soul may take a
+/// body of this element. Unclaimed events do not simply vanish — at expiry the
+/// world may use them itself, as a wildlife birth.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Event {
+    pub id: u32,
+    pub element: Element,
+    pub cell: u32,
+    pub opened: u64,
+    pub closes: u64,
+}
+
+impl Hashable for Event {
+    fn hash_into(&self, h: &mut Hasher) {
+        h.u32(self.id)
+            .u8(self.element as u8)
+            .u32(self.cell)
+            .u64(self.opened)
+            .u64(self.closes);
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Stats {
@@ -22,6 +49,8 @@ pub struct Stats {
     pub deaths: u64,
     pub collisions: u64,
     pub actions: u64,
+    pub births_by: PerElement<u64>,
+    pub deaths_by: PerElement<u64>,
     /// Total demand refused by the deposit governors. A rising value means
     /// somebody is pushing on a rate limit.
     pub deposit_clipped: u64,
@@ -49,12 +78,22 @@ pub struct World {
     /// It is covered by [`World::state_hash`], so a retuned world never
     /// compares equal to an untuned one.
     pub races: PerElement<RaceAttrs>,
+    /// Same story for the terrain's tuning.
+    pub terrain_attrs: PerElement<TerrainAttrs>,
+
+    /// The S1 field: five saturation planes plus the demand accumulated
+    /// against them since the last settle.
+    pub terrain: Terrain,
+
+    /// Open incarnation events, ascending by id.
+    pub events: Vec<Event>,
+    next_event_id: u32,
+    /// The most recent successful `Incarnate` claim, `(event id, entity id)`.
+    /// This is how a client finds the body it was just granted.
+    pub last_claim: Option<(u32, u32)>,
 
     deposit_gov: PerElement<Governor>,
     consume_gov: PerElement<Governor>,
-    /// Accumulated in milli-units between terrain ticks.
-    deposit_demand: PerElement<u64>,
-    consume_demand: PerElement<u64>,
 
     pub last_deposit: PerElement<Grant>,
     pub last_consume: PerElement<Grant>,
@@ -63,6 +102,7 @@ pub struct World {
 
 impl World {
     pub fn new(seed: u64, size_cells: i32) -> World {
+        let side = size_cells.max(1) as usize;
         World {
             seed,
             tick: 0,
@@ -70,17 +110,20 @@ impl World {
             next_id: 1,
             size: Fx::from_int(size_cells),
             races: RACES,
+            terrain_attrs: TERRAIN,
+            terrain: Terrain::new(side),
+            events: Vec::new(),
+            next_event_id: 1,
+            last_claim: None,
             deposit_gov: PerElement(Element::ALL.map(|e| Governor::new(attrs(e).deposit))),
             consume_gov: PerElement(Element::ALL.map(|e| Governor::new(attrs(e).consume))),
-            deposit_demand: PerElement::filled(0),
-            consume_demand: PerElement::filled(0),
             last_deposit: PerElement::default(),
             last_consume: PerElement::default(),
             stats: Stats::default(),
         }
     }
 
-    /// Swap the tuning table on a running world.
+    /// Swap the race tuning table on a running world.
     ///
     /// Rate bands reach their governors immediately; banked burst budget
     /// carries over, clamped to whatever the new band allows. Lifespan is the
@@ -93,6 +136,11 @@ impl World {
             self.deposit_gov.get_mut(e).set_band(races[e].deposit);
             self.consume_gov.get_mut(e).set_band(races[e].consume);
         }
+    }
+
+    /// Swap the terrain tuning table. Takes effect at the next terrain tick.
+    pub fn retune_terrain(&mut self, t: PerElement<TerrainAttrs>) {
+        self.terrain_attrs = t;
     }
 
     /// A deterministic starting population, spread evenly across the five
@@ -124,11 +172,13 @@ impl World {
         self.next_id += 1;
         let a = self.races[element];
         let e = Entity::spawn(id, element, self.clamp_to_bounds(at), self.seed, self.tick, &a);
+        let cell = self.terrain.cell_of(e.pos);
         // Ids are handed out ascending, so pushing preserves the sort.
         self.entities.push(e);
         self.stats.births += 1;
-        *self.deposit_demand.get_mut(element) += a.deposit_per(DepChannel::OnBirth);
-        *self.consume_demand.get_mut(element) += a.consume_per(DepChannel::OnBirth);
+        *self.stats.births_by.get_mut(element) += 1;
+        self.terrain.add_dep(element, cell, a.deposit_per(DepChannel::OnBirth));
+        self.terrain.add_con(element, cell, a.consume_per(DepChannel::OnBirth));
         id
     }
 
@@ -179,11 +229,22 @@ impl World {
                     self.entities[i].hp = 0;
                 }
             }
+            CmdKind::Incarnate { event } => {
+                // A claim on an event that has already closed — or never
+                // existed — is a deterministic no-op: the moment passed.
+                if let Some(i) = self.events.iter().position(|ev| ev.id == event) {
+                    let ev = self.events.remove(i);
+                    let at = self.terrain.cell_center(ev.cell as usize);
+                    let id = self.spawn(ev.element, at);
+                    self.last_claim = Some((ev.id, id));
+                }
+            }
         }
     }
 
-    /// 2 — age every body and mark the expired ones. Death demand is charged
-    /// here so a body that dies this tick still contributes its corpse.
+    /// 2 — age every body, mark the expired, and let the living graze. Death
+    /// demand is charged here, at the corpse's cell, so a body that dies this
+    /// tick still terraforms with its own remains.
     fn phase_aging(&mut self) {
         for i in 0..self.entities.len() {
             let e = &mut self.entities[i];
@@ -192,24 +253,37 @@ impl World {
             }
             e.age += 1;
             e.acted = false;
+            let el = e.element;
+            let a = self.races[el];
+            let cell = self.terrain.cell_of(e.pos);
+
+            // The meal cadence. Real feeding arrives at S2; until then the
+            // OnConsume channel fires as a graze at the body's cell, staggered
+            // by id so a cohort does not all eat on the same tick.
+            if (self.tick + e.id as u64).is_multiple_of(RaceAttrs::FEED_PERIOD) {
+                self.terrain.add_dep(el, cell, a.deposit_per(DepChannel::OnConsume));
+                self.terrain.add_con(el, cell, a.consume_per(DepChannel::OnConsume));
+            }
+
             if e.is_expired() || e.hp <= 0 {
                 e.alive = false;
-                let el = e.element;
-                let a = self.races[el];
                 self.stats.deaths += 1;
-                *self.deposit_demand.get_mut(el) += a.deposit_per(DepChannel::OnDeath);
-                *self.consume_demand.get_mut(el) += a.consume_per(DepChannel::OnDeath);
+                *self.stats.deaths_by.get_mut(el) += 1;
+                self.terrain.add_dep(el, cell, a.deposit_per(DepChannel::OnDeath));
+                self.terrain.add_con(el, cell, a.consume_per(DepChannel::OnDeath));
             }
         }
     }
 
-    /// 3 — move, jitter, and reflect off the bounds.
+    /// 3 — move, jitter, and reflect off the bounds. Action demand lands at
+    /// the cell the body moved *into*, which is what makes Water's wake a
+    /// trail rather than a point.
     fn phase_movement(&mut self) {
         let (seed, tick, size) = (self.seed, self.tick, self.size);
         let races = self.races;
-        let mut acted: PerElement<u64> = PerElement::filled(0);
 
-        for e in self.entities.iter_mut() {
+        for i in 0..self.entities.len() {
+            let e = &mut self.entities[i];
             if !e.alive {
                 continue;
             }
@@ -240,22 +314,18 @@ impl World {
 
             if delta.len_sq() > ACTION_THRESHOLD * ACTION_THRESHOLD {
                 e.acted = true;
-                *acted.get_mut(e.element) += 1;
-            }
-        }
-
-        for (el, n) in acted.iter() {
-            if *n > 0 {
-                self.stats.actions += *n;
-                *self.deposit_demand.get_mut(el) += races[el].deposit_per(DepChannel::OnAction) * *n;
-                *self.consume_demand.get_mut(el) += races[el].consume_per(DepChannel::OnAction) * *n;
+                let el = e.element;
+                let cell = self.terrain.cell_of(self.entities[i].pos);
+                self.stats.actions += 1;
+                self.terrain.add_dep(el, cell, races[el].deposit_per(DepChannel::OnAction));
+                self.terrain.add_con(el, cell, races[el].consume_per(DepChannel::OnAction));
             }
         }
     }
 
-    /// 4 — pairwise separation. O(n²) is correct and fast enough for Stage 0;
-    /// a uniform-grid broadphase arrives with the terrain field at S1, and it
-    /// must iterate cells in index order to stay deterministic.
+    /// 4 — pairwise separation. O(n²) is correct and fast enough for now; a
+    /// uniform-grid broadphase must iterate cells in index order to stay
+    /// deterministic when it arrives.
     fn phase_collisions(&mut self) {
         let n = self.entities.len();
         let mut fix = vec![V2::ZERO; n];
@@ -295,40 +365,104 @@ impl World {
         }
     }
 
-    /// 5 — at a terrain-tick boundary, charge existence and settle every
-    /// governor. This is the only place demand becomes terrain change.
+    /// 5 — the terrain tick: charge existence, settle every governor into the
+    /// field, run the field's own operators, then let the field open and close
+    /// incarnation events. This is the only place demand becomes terrain.
     fn phase_settle(&mut self) {
         if !(self.tick + 1).is_multiple_of(TERRAIN_PERIOD) {
             return;
         }
-
-        let mut alive: PerElement<u64> = PerElement::filled(0);
-        for e in &self.entities {
-            if e.alive {
-                *alive.get_mut(e.element) += 1;
-            }
-        }
         let races = self.races;
-        for (el, n) in alive.iter() {
-            if *n > 0 {
-                *self.deposit_demand.get_mut(el) +=
-                    races[el].deposit_per(DepChannel::OnExistence) * *n;
-                *self.consume_demand.get_mut(el) +=
-                    races[el].consume_per(DepChannel::OnExistence) * *n;
+
+        // Existence: presence itself, charged at each body's cell.
+        for i in 0..self.entities.len() {
+            let e = &self.entities[i];
+            if !e.alive {
+                continue;
             }
+            let el = e.element;
+            let cell = self.terrain.cell_of(e.pos);
+            self.terrain.add_dep(el, cell, races[el].deposit_per(DepChannel::OnExistence));
+            self.terrain.add_con(el, cell, races[el].consume_per(DepChannel::OnExistence));
         }
 
+        // Governors: demand in, bounded grants out, grants into the field.
         for el in Element::ALL {
-            let d = self.deposit_demand[el] / MILLI;
-            let grant = self.deposit_gov.get_mut(el).settle(d);
+            let dtotal = self.terrain.dep_total(el);
+            let grant = self.deposit_gov.get_mut(el).settle(dtotal / MILLI);
             self.stats.deposit_clipped += grant.clipped;
             self.stats.deposit_forced += grant.forced;
             self.last_deposit[el] = grant;
-            self.deposit_demand[el] = 0;
+            let paid = grant.granted - grant.forced;
+            self.terrain.apply_deposit(el, paid, dtotal / MILLI, grant.forced, self.seed, self.tick);
 
-            let c = self.consume_demand[el] / MILLI;
-            self.last_consume[el] = self.consume_gov.get_mut(el).settle(c);
-            self.consume_demand[el] = 0;
+            let ctotal = self.terrain.con_total(el);
+            let cgrant = self.consume_gov.get_mut(el).settle(ctotal / MILLI);
+            self.last_consume[el] = cgrant;
+            let cpaid = cgrant.granted - cgrant.forced;
+            self.terrain.apply_consume(el, cpaid, ctotal / MILLI, cgrant.forced, self.seed, self.tick);
+        }
+
+        // The field's own churn.
+        let ta = self.terrain_attrs;
+        self.terrain.ops(&ta, self.seed, self.tick);
+        self.terrain.clear_demand();
+
+        self.phase_events();
+    }
+
+    /// Incarnation events: expire the closed (letting the world use unclaimed
+    /// ones as wildlife births), then open new ones — terrain-gated where the
+    /// field allows it, wild sparks anywhere as the floor under extinction.
+    fn phase_events(&mut self) {
+        let pop = self.population();
+        let ta = self.terrain_attrs;
+
+        // Expiries, ascending by id. An unclaimed event is the world's to
+        // spend: below the wildlife cap, the birth happens anyway.
+        let expired: Vec<Event> = self
+            .events
+            .iter()
+            .filter(|ev| ev.closes <= self.tick)
+            .copied()
+            .collect();
+        self.events.retain(|ev| ev.closes > self.tick);
+        for ev in expired {
+            if pop[ev.element] < ta[ev.element].wild_cap {
+                let at = self.terrain.cell_center(ev.cell as usize);
+                self.spawn(ev.element, at);
+            }
+        }
+
+        // Openings: at most one gated and one wild per element per terrain
+        // tick, under the concurrency cap.
+        for el in Element::ALL {
+            let open = self.events.iter().filter(|ev| ev.element == el).count();
+            if open >= EVENTS_CAP {
+                continue;
+            }
+            let a = ta[el];
+            let mut sites: Vec<usize> = Vec::with_capacity(2);
+            if let Some(cell) = self.terrain.gated_site(el, a.ev_threshold, self.seed, self.tick) {
+                sites.push(cell);
+            }
+            if let Some(cell) = self.terrain.wild_site(el, a.wild, self.seed, self.tick) {
+                // A wild strike on the cell already chosen adds nothing.
+                if sites.first() != Some(&cell) {
+                    sites.push(cell);
+                }
+            }
+            for cell in sites.into_iter().take(EVENTS_CAP - open) {
+                let id = self.next_event_id;
+                self.next_event_id += 1;
+                self.events.push(Event {
+                    id,
+                    element: el,
+                    cell: cell as u32,
+                    opened: self.tick,
+                    closes: self.tick + a.ev_window as u64,
+                });
+            }
         }
     }
 
@@ -366,22 +500,31 @@ impl World {
         for e in &self.entities {
             e.hash_into(&mut h);
         }
-        // The tuning table is state now, so a retuned world must not hash the
+        // The tuning tables are state, so a retuned world must not hash the
         // same as an untuned one — otherwise `retune` is a silent divergence.
         for (_, a) in self.races.iter() {
             a.hash_into(&mut h);
         }
+        for (_, a) in self.terrain_attrs.iter() {
+            a.hash_into(&mut h);
+        }
+        self.terrain.hash_into(&mut h);
+
+        h.u32(self.events.len() as u32);
+        for ev in &self.events {
+            ev.hash_into(&mut h);
+        }
+        h.u32(self.next_event_id);
+        match self.last_claim {
+            Some((ev, ent)) => h.bool(true).u32(ev).u32(ent),
+            None => h.bool(false),
+        };
+
         for (_, g) in self.deposit_gov.iter() {
             g.hash_into(&mut h);
         }
         for (_, g) in self.consume_gov.iter() {
             g.hash_into(&mut h);
-        }
-        for (_, d) in self.deposit_demand.iter() {
-            h.u64(*d);
-        }
-        for (_, d) in self.consume_demand.iter() {
-            h.u64(*d);
         }
         for (_, g) in self.last_deposit.iter() {
             g.hash_into(&mut h);
@@ -395,6 +538,12 @@ impl World {
             .u64(self.stats.actions)
             .u64(self.stats.deposit_clipped)
             .u64(self.stats.deposit_forced);
+        for (_, v) in self.stats.births_by.iter() {
+            h.u64(*v);
+        }
+        for (_, v) in self.stats.deaths_by.iter() {
+            h.u64(*v);
+        }
         h.finish()
     }
 }
@@ -437,17 +586,21 @@ mod tests {
 
     #[test]
     fn fire_turns_over_many_times_before_earth_dies_once() {
-        // The tempo axis, observed rather than asserted from the table.
+        // The tempo axis, observed rather than asserted from the table. Wild
+        // events may replenish Fire, so the claim is about deaths, not
+        // survivors: every original Fire died, no Earth did.
         let mut w = World::new(7, 48);
         w.seed_population(6);
         let log = InputLog::new();
         for _ in 0..5000 {
             w.step(&log);
         }
-        let pop = w.population();
-        assert_eq!(pop[Element::Earth], 6, "Earth should not have died at all");
-        assert_eq!(pop[Element::Fire], 0, "Fire should have burned out entirely");
-        assert!(w.stats.deaths >= 6, "expected turnover, saw {}", w.stats.deaths);
+        assert!(
+            w.stats.deaths_by[Element::Fire] >= 6,
+            "all six original Fire should have burned out, saw {}",
+            w.stats.deaths_by[Element::Fire]
+        );
+        assert_eq!(w.stats.deaths_by[Element::Earth], 0, "no Earth should have died");
     }
 
     #[test]
@@ -475,26 +628,118 @@ mod tests {
     }
 
     #[test]
-    fn an_extinct_race_still_churns_its_terrain() {
-        // Nothing but Earth exists. Every other race must still be granted its
-        // floor, which is what stops a lost biome becoming an absorbing state.
-        let mut w = World::new(3, 32);
-        for k in 0..4 {
-            w.spawn(Element::Earth, V2::new(Fx::from_int(k * 3), Fx::from_int(k * 3)));
-        }
+    fn terraforming_reaches_the_field() {
+        // Deaths and presence must become saturation the map can show.
+        let mut w = world();
         let log = InputLog::new();
-        for _ in 0..(TERRAIN_PERIOD * 3) {
+        for _ in 0..(TERRAIN_PERIOD * 20) {
             w.step(&log);
         }
-        for el in [Element::Fire, Element::Water, Element::Wood, Element::Metal] {
-            assert_eq!(
-                w.last_deposit[el].granted,
-                attrs(el).deposit.floor as u64,
-                "{} should be churning at its floor",
-                el.name()
-            );
-            assert!(w.last_deposit[el].forced > 0);
+        let total: u64 = Element::ALL
+            .iter()
+            .flat_map(|e| w.terrain.sat[e.index()].iter())
+            .map(|v| *v as u64)
+            .sum();
+        assert!(total > 0, "twenty terrain ticks moved nothing into the field");
+    }
+
+    #[test]
+    fn an_empty_world_self_populates() {
+        // No seed population, no commands. Influx builds terrain, wild events
+        // spark, unclaimed expiries become wildlife: life arises on its own.
+        let mut w = World::new(3, 32);
+        let log = InputLog::new();
+        for _ in 0..(TERRAIN_PERIOD * 120) {
+            w.step(&log);
         }
+        assert!(
+            w.alive_count() > 0,
+            "an empty server should have grown wildlife by now"
+        );
+    }
+
+    #[test]
+    fn events_open_and_have_windows() {
+        let mut w = World::new(0xE0E0, 32);
+        let log = InputLog::new();
+        for _ in 0..(TERRAIN_PERIOD * 60) {
+            w.step(&log);
+            for ev in &w.events {
+                assert!(ev.closes > ev.opened, "event with a non-window");
+                assert!((ev.cell as usize) < w.terrain.cells());
+            }
+        }
+        assert!(w.next_event_id > 1, "sixty terrain ticks opened no events at all");
+    }
+
+    #[test]
+    fn every_element_gets_events_eventually() {
+        // The wild backstop working: joinability does not depend on terrain.
+        let mut w = World::new(0xAB, 32);
+        let log = InputLog::new();
+        let mut seen = PerElement::filled(false);
+        for _ in 0..(TERRAIN_PERIOD * 200) {
+            w.step(&log);
+            for ev in &w.events {
+                *seen.get_mut(ev.element) = true;
+            }
+            if Element::ALL.iter().all(|e| seen[*e]) {
+                return;
+            }
+        }
+        for e in Element::ALL {
+            assert!(seen[e], "{} never opened an event", e.name());
+        }
+    }
+
+    #[test]
+    fn incarnate_claims_the_event_and_reports_the_body() {
+        let mut w = World::new(0xCAFE, 32);
+        let log = InputLog::new();
+        // Run until an event exists.
+        while w.events.is_empty() {
+            w.step(&log);
+            assert!(w.tick < 200_000, "no event ever opened");
+        }
+        let ev = w.events[0];
+        let mut claim = InputLog::new();
+        claim.push(Command {
+            tick: w.tick,
+            entity: 0,
+            kind: CmdKind::Incarnate { event: ev.id },
+        });
+        claim.finalize();
+        let before = w.alive_count();
+        w.step(&claim);
+        let (cev, cent) = w.last_claim.expect("claim should register");
+        assert_eq!(cev, ev.id);
+        assert_eq!(w.alive_count(), before + 1);
+        let body = w.entities.iter().find(|e| e.id == cent).expect("body exists");
+        assert_eq!(body.element, ev.element);
+        assert_eq!(
+            w.terrain.cell_of(body.pos) as u32,
+            ev.cell,
+            "born at the event's cell"
+        );
+        assert!(
+            !w.events.iter().any(|e| e.id == ev.id),
+            "claimed event should be gone"
+        );
+    }
+
+    #[test]
+    fn incarnate_on_a_dead_event_is_a_no_op() {
+        let mut w = World::new(5, 32);
+        let mut log = InputLog::new();
+        log.push(Command {
+            tick: 0,
+            entity: 0,
+            kind: CmdKind::Incarnate { event: 999_999 },
+        });
+        log.finalize();
+        w.step(&log);
+        assert_eq!(w.alive_count(), 0);
+        assert_eq!(w.last_claim, None);
     }
 
     #[test]
@@ -524,5 +769,13 @@ mod tests {
         let log = InputLog::new();
         a.step(&log);
         assert_ne!(a.state_hash(), b.state_hash());
+    }
+
+    #[test]
+    fn state_hash_notices_the_terrain() {
+        let a = world();
+        let mut b = a.clone();
+        b.terrain.sat[2][100] ^= 1;
+        assert_ne!(a.state_hash(), b.state_hash(), "a flipped saturation bit was invisible");
     }
 }

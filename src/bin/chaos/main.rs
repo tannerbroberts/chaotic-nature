@@ -39,7 +39,7 @@ use pentagram::world::World;
 
 use knobs::Tuning;
 use term::{Key, Keys, Term};
-use view::{Run, View};
+use view::{Mode, Run, View};
 
 /// 20 frames a second. Sim speed is decoupled from this — a frame runs however
 /// many ticks the speed knob asks for.
@@ -48,9 +48,11 @@ const FRAME: Duration = Duration::from_millis(50);
 /// before we draw anyway. Without it, winding the speed past what the machine
 /// can do would lock the keyboard out.
 const FRAME_BUDGET: Duration = Duration::from_millis(40);
-/// Bodies of one race the restock knob may spawn in a single frame. Restocking
-/// 200 at once would be a stampede, not a population.
-const RESTOCK_RATE: u32 = 4;
+/// Ceiling on bodies of one race the restock knob may spawn in a single frame.
+/// Restocking 200 at once would be a stampede, not a population — but the
+/// allowance has to scale with how much time a frame covers, or a race with an
+/// eight-minute lifespan quietly dies out whenever the sim speed is wound up.
+const RESTOCK_MAX: u64 = 24;
 
 const WANDER_STEPS: [u32; 7] = [0, 1, 2, 5, 10, 25, 50];
 
@@ -85,9 +87,11 @@ impl Args {
                 "--cols" => a.cols = v.map(|n| n.clamp(60, 400) as usize),
                 "--help" | "-h" => {
                     println!(
-                        "chaos — Chaotic Nature live view\n\n\
-                         Every race attribute is editable on screen; these only set the\n\
-                         starting conditions.\n\n\
+                        "chaos — Chaotic Nature\n\n\
+                         You arrive as a soul over a living map. Incarnation events open as\n\
+                         terrain allows — and as wild sparks; pick one, live it, die, return.\n\
+                         Every race and terrain attribute is editable while it runs; flags only\n\
+                         set the starting conditions.\n\n\
                          options:\n  \
                          --size N    world edge in cells        (default 96)\n  \
                          --pop N     bodies per race to seed    (default 60)\n  \
@@ -95,18 +99,19 @@ impl Args {
                          --seed N    world seed                 (default 0xBEEF)\n  \
                          --rows N    force view height          (default: ask the terminal)\n  \
                          --cols N    force view width\n\n\
-                         keys:\n  \
-                         ↑↓←→ or hjkl   move the knob cursor (rows are knobs, columns are races)\n  \
-                         - +            adjust the selected knob\n  \
-                         [ ]            adjust it ten times as hard\n  \
-                         < >            halve / double the sim speed\n  \
-                         space          pause      .   advance one simulated minute\n  \
-                         tab            knob page  m   show or hide the map\n  \
-                         w              cycle how much the view steers bodies around\n  \
-                         r / R          reset the selected knob / the whole table\n  \
-                         z              restart the world at tick 0 with the current knobs\n  \
-                         T              write the current table to src/race.tuned.rs\n  \
-                         q              quit\n\n\
+                         soul view:\n  \
+                         ↑↓          choose an incarnation event    enter   incarnate\n  \
+                         1-5         jump to next event of a race   s       knob table\n\n\
+                         incarnated:\n  \
+                         ↑↓←→        steer your body                esc     release the body\n\n\
+                         knob table:\n  \
+                         ↑↓←→ or hjkl   move the cursor (rows are knobs, columns are races)\n  \
+                         - + / [ ]      adjust (coarse)             tab     page (rates·mix·terrain)\n  \
+                         r / R          reset knob / whole table    m       show or hide the map\n  \
+                         w              cycle wander steering       T       write src/race.tuned.rs\n  \
+                         z              restart at tick 0 with the current knobs\n\n\
+                         everywhere:\n  \
+                         space pause · . advance one sim minute · < > speed · q quit\n\n\
                          subcommands (via the wrapper): verify · soak · test · edit · watch"
                     );
                     std::process::exit(0);
@@ -131,6 +136,15 @@ struct Sim {
     ticked: u64,
     since: Instant,
     retuned: bool,
+    /// Player commands waiting to be stamped into the next input log —
+    /// `(entity, kind)`, stamped at drain time so pausing cannot strand them
+    /// in the past.
+    pending: Vec<(u32, CmdKind)>,
+    /// An `Incarnate` has been submitted for this event id; watching
+    /// `World::last_claim` for the body it produces.
+    await_claim: Option<u32>,
+    /// Tick the current body was born, for the "lived" figure at death.
+    body_since: u64,
 }
 
 fn main() {
@@ -149,6 +163,9 @@ fn main() {
         ticked: 0,
         since: Instant::now(),
         retuned: false,
+        pending: Vec::new(),
+        await_claim: None,
+        body_since: 0,
     };
 
     let term = Term::enter();
@@ -170,6 +187,7 @@ fn main() {
         // The knobs are the authority; push them at the world every frame. It
         // is a 5-row copy, so there is no point being clever about when.
         w.retune(t.races);
+        w.retune_terrain(t.terrain);
 
         let ticks = if sim.stepping > 0 {
             let n = sim.stepping.min(TERRAIN_PERIOD);
@@ -185,7 +203,11 @@ fn main() {
         };
 
         if ticks > 0 {
-            let log = inputs(&w, &t, WANDER_STEPS[sim.wander], a.seed, ticks);
+            let player = match v.mode {
+                Mode::Body(id) => Some(id),
+                _ => None,
+            };
+            let log = inputs(&w, &t, WANDER_STEPS[sim.wander], a.seed, ticks, &mut sim.pending, player);
             for _ in 0..ticks {
                 w.step(&log);
                 sim.ticked += 1;
@@ -193,6 +215,7 @@ fn main() {
                     break;
                 }
             }
+            resolve(&mut v, &mut sim, &w);
         }
 
         v.sample(&w);
@@ -248,11 +271,48 @@ fn handle(
     seed: u64,
     size: i32,
 ) -> bool {
+    // Keys that mean the same thing on every screen.
+    match k {
+        Key::Char('q') | Key::Char('\x03') => return true,
+        Key::Char('<') | Key::Char(',') => {
+            sim.speed = (sim.speed / 2).max(1);
+            return false;
+        }
+        Key::Char('>') => {
+            sim.speed = (sim.speed * 2).min(200_000);
+            return false;
+        }
+        Key::Char(' ') => {
+            sim.paused = !sim.paused;
+            return false;
+        }
+        // Freeze, then advance exactly one terrain tick — the granularity the
+        // governors actually settle at, so every readout moves once.
+        Key::Char('.') => {
+            sim.paused = true;
+            sim.stepping = TERRAIN_PERIOD;
+            return false;
+        }
+        _ => {}
+    }
+
+    match v.mode {
+        Mode::Tune => handle_tune(k, v, t, sim, w, seed, size),
+        Mode::Soul => handle_soul(k, v, sim, w),
+        Mode::Body(id) => handle_body(k, v, sim, id),
+    }
+    false
+}
+
+fn handle_tune(k: Key, v: &mut View, t: &mut Tuning, sim: &mut Sim, w: &mut World, seed: u64, size: i32) {
     let knobs = v.knobs();
     let e = v.element();
 
     match k {
-        Key::Char('q') | Key::Char('\x03') | Key::Esc => return true,
+        Key::Char('s') | Key::Esc => {
+            v.mode = Mode::Soul;
+            return;
+        }
 
         Key::Up | Key::Char('k') => v.row = v.row.checked_sub(1).unwrap_or(knobs.len() - 1),
         Key::Down | Key::Char('j') => v.row = (v.row + 1) % knobs.len(),
@@ -276,16 +336,6 @@ fn handle(
             sim.retuned = true;
         }
 
-        Key::Char('<') | Key::Char(',') => sim.speed = (sim.speed / 2).max(1),
-        Key::Char('>') => sim.speed = (sim.speed * 2).min(200_000),
-        Key::Char(' ') => sim.paused = !sim.paused,
-        // Freeze, then advance exactly one terrain tick — the granularity the
-        // governors actually settle at, so every readout moves once.
-        Key::Char('.') => {
-            sim.paused = true;
-            sim.stepping = TERRAIN_PERIOD;
-        }
-
         Key::Char('\t') => {
             v.page = (v.page + 1) % View::pages();
             v.row = 0;
@@ -306,13 +356,14 @@ fn handle(
             v.say(format!("{} {} back to the shipped value", e.name(), knobs[v.row].name));
         }
         Key::Char('R') => {
-            *t = Tuning { races: RACES, restock: t.restock };
+            *t = Tuning { races: RACES, terrain: pentagram::terrain::TERRAIN, restock: t.restock };
             sim.retuned = false;
-            v.say("whole table back to src/race.rs");
+            v.say("whole table back to the shipped values");
         }
         Key::Char('z') => {
             *w = World::new(seed, size);
             w.retune(t.races);
+            w.retune_terrain(t.terrain);
             for el in Element::ALL {
                 for _ in 0..t.restock[el] {
                     let x = rand_below(seed, w.tick, w.next_id, Channel::SpawnPlacement, size.max(1) as u32);
@@ -323,6 +374,9 @@ fn handle(
             sim.ticked = 0;
             sim.since = Instant::now();
             sim.retuned = false;
+            sim.pending.clear();
+            sim.await_claim = None;
+            v.mode = Mode::Soul;
             v.history = pentagram::element::PerElement([vec![], vec![], vec![], vec![], vec![]]);
             v.say("restarted at tick 0 — this run is reproducible from these knobs");
         }
@@ -334,20 +388,145 @@ fn handle(
         _ => {}
     }
     v.clamp();
-    false
 }
 
-/// The view's own input stream: top the population back up, and steer some of
-/// it around. Both are ordinary commands stamped for the ticks about to run,
-/// which is the same path a player's input would take.
-fn inputs(w: &World, t: &Tuning, wander_pct: u32, seed: u64, ticks: u64) -> InputLog {
+fn handle_soul(k: Key, v: &mut View, sim: &mut Sim, w: &World) {
+    let evs = View::sorted_events(w);
+    match k {
+        Key::Char('s') | Key::Esc | Key::Char('\t') => v.mode = Mode::Tune,
+
+        Key::Up | Key::Char('k') => {
+            let n = evs.len().max(1);
+            v.sel = v.sel.checked_sub(1).unwrap_or(n - 1);
+        }
+        Key::Down | Key::Char('j') => {
+            let n = evs.len().max(1);
+            v.sel = (v.sel + 1) % n;
+        }
+
+        // Jump to the next open event of a specific race.
+        Key::Char(c @ '1'..='5') => {
+            let el = Element::from_index(c as usize - '1' as usize);
+            let n = evs.len();
+            if n > 0 {
+                let hit = (1..=n)
+                    .map(|off| (v.sel + off) % n)
+                    .find(|i| evs[*i].element == el);
+                match hit {
+                    Some(i) => v.sel = i,
+                    None => v.say(format!("no open {} events right now", el.name())),
+                }
+            }
+        }
+
+        Key::Char('\r') | Key::Char('\n') => {
+            if sim.await_claim.is_some() {
+                return;
+            }
+            match evs.get(v.sel) {
+                Some(ev) => {
+                    sim.pending.push((0, CmdKind::Incarnate { event: ev.id }));
+                    sim.await_claim = Some(ev.id);
+                    if sim.paused {
+                        v.say(format!(
+                            "reaching for the {} moment — unpause to be born",
+                            ev.element.name()
+                        ));
+                    } else {
+                        v.say(format!("reaching for the {} moment…", ev.element.name()));
+                    }
+                }
+                None => v.say("no open events — the world is between moments"),
+            }
+        }
+
+        _ => {}
+    }
+}
+
+fn handle_body(k: Key, v: &mut View, sim: &mut Sim, id: u32) {
+    let dir = |x: i32, y: i32| V2::new(Fx::from_int(x), Fx::from_int(y));
+    match k {
+        Key::Esc => {
+            v.mode = Mode::Soul;
+            v.say("the body wanders on without you");
+        }
+        Key::Up | Key::Char('k') => sim.pending.push((id, CmdKind::SetHeading { dir: dir(0, -1) })),
+        Key::Down | Key::Char('j') => sim.pending.push((id, CmdKind::SetHeading { dir: dir(0, 1) })),
+        Key::Left | Key::Char('h') => sim.pending.push((id, CmdKind::SetHeading { dir: dir(-1, 0) })),
+        Key::Right | Key::Char('l') => sim.pending.push((id, CmdKind::SetHeading { dir: dir(1, 0) })),
+        _ => {}
+    }
+}
+
+/// The soul → body → soul transitions that depend on what the world just did.
+fn resolve(v: &mut View, sim: &mut Sim, w: &World) {
+    if let Some(eid) = sim.await_claim {
+        match w.last_claim {
+            Some((cev, cent)) if cev == eid => {
+                sim.await_claim = None;
+                sim.body_since = w.tick;
+                v.mode = Mode::Body(cent);
+                let el = w
+                    .entities
+                    .binary_search_by_key(&cent, |e| e.id)
+                    .ok()
+                    .map(|i| w.entities[i].element.name())
+                    .unwrap_or("?");
+                if sim.speed > 20 {
+                    sim.speed = 10;
+                    v.say(format!(
+                        "born as {el} — arrows steer · esc releases the body · slowed to 10 t/s"
+                    ));
+                } else {
+                    v.say(format!("born as {el} — arrows steer · esc releases the body"));
+                }
+            }
+            _ if !w.events.iter().any(|e| e.id == eid) => {
+                sim.await_claim = None;
+                v.say("the moment passed before you reached it");
+            }
+            _ => {}
+        }
+    }
+
+    if let Mode::Body(id) = v.mode {
+        if w.entities.binary_search_by_key(&id, |e| e.id).is_err() {
+            v.mode = Mode::Soul;
+            let lived = w.tick.saturating_sub(sim.body_since);
+            v.say(format!(
+                "your body returned to the land — {} lived · choose another moment",
+                knobs::duration(lived)
+            ));
+        }
+    }
+}
+
+/// The view's own input stream: the player's queued commands, plus restocking
+/// and wander-steering. All ordinary commands stamped for the ticks about to
+/// run — the same path any player's input takes.
+fn inputs(
+    w: &World,
+    t: &Tuning,
+    wander_pct: u32,
+    seed: u64,
+    ticks: u64,
+    pending: &mut Vec<(u32, CmdKind)>,
+    player: Option<u32>,
+) -> InputLog {
     let mut log = InputLog::new();
     let tick = w.tick;
     let size = w.size.floor_int().max(1) as u32;
     let pop = w.population();
 
+    // The player goes first, stamped for the first tick about to run.
+    for (entity, kind) in pending.drain(..) {
+        log.push(Command { tick, entity, kind });
+    }
+
+    let allowance = (ticks / 20).clamp(1, RESTOCK_MAX) as u32;
     for e in Element::ALL {
-        let deficit = t.restock[e].saturating_sub(pop[e]).min(RESTOCK_RATE);
+        let deficit = t.restock[e].saturating_sub(pop[e]).min(allowance);
         for k in 0..deficit {
             let salt = (e.index() as u32) * 7919 + k;
             let x = rand_below(seed, tick, salt, Channel::SpawnPlacement, size);
@@ -364,15 +543,21 @@ fn inputs(w: &World, t: &Tuning, wander_pct: u32, seed: u64, ticks: u64) -> Inpu
     }
 
     // Re-steer `wander_pct` of the population per second, spread across the
-    // ticks this frame covers. Without it bodies bounce between walls on rails.
+    // ticks this frame covers. Without it bodies bounce between walls on
+    // rails. The player's body is never wander-steered — those hands are
+    // somebody's.
     let n = w.entities.len() as u64;
     if wander_pct > 0 && n > 0 {
         let steers = (n * wander_pct as u64 * ticks / 100 / 100).max(1).min(n);
         for s in 0..steers {
             let at = rand_below(seed, tick, s as u32, Channel::Wander, n as u32) as usize;
+            let id = w.entities[at].id;
+            if player == Some(id) {
+                continue;
+            }
             log.push(Command {
                 tick: tick + (s * ticks / steers.max(1)),
-                entity: w.entities[at].id,
+                entity: id,
                 kind: CmdKind::SetHeading {
                     dir: V2::new(
                         rand_signed(seed, tick, s as u32 + 1, Channel::Wander),
@@ -392,10 +577,14 @@ fn inputs(w: &World, t: &Tuning, wander_pct: u32, seed: u64, ticks: u64) -> Inpu
 /// clobbering that from a UI would throw away the part that matters.
 fn write_table(t: &Tuning) -> std::io::Result<String> {
     use std::fmt::Write as _;
-    let root = std::env::var("CHAOS_ROOT").unwrap_or_else(|_| {
-        format!("{}/dev/pentagram", std::env::var("HOME").unwrap_or_default())
-    });
-    let path = format!("{root}/src/race.tuned.rs");
+    // `CHAOS_ROOT` is what the wrapper exports, and it is the only thing that
+    // reliably identifies *which* checkout is running. Without it, write beside
+    // the caller rather than guessing at a path that may belong to a different
+    // copy of the tree.
+    let path = match std::env::var("CHAOS_ROOT") {
+        Ok(root) => format!("{root}/src/race.tuned.rs"),
+        Err(_) => "race.tuned.rs".to_string(),
+    };
 
     let mut s = String::from(
         "// Written by the chaos live view. Not compiled — copy the rows you want\n\
@@ -437,6 +626,20 @@ fn write_table(t: &Tuning) -> std::io::Result<String> {
             a.consume.burst_ticks,
             mix(&a, true, 0), mix(&a, true, 1), mix(&a, true, 2), mix(&a, true, 3), mix(&a, true, 4),
             a.fantasy,
+        );
+    }
+    s.push_str("]);\n\n");
+
+    s.push_str("pub const TERRAIN: PerElement<TerrainAttrs> = PerElement([\n");
+    for e in Element::ALL {
+        let a = t.terrain[e];
+        let _ = write!(
+            s,
+            "    // {}\n    TerrainAttrs {{ influx: {}, decay: {}, generate: {}, overcome: {}, \
+             diffuse: {}, ev_threshold: {}, ev_window: {}, wild: {}, wild_cap: {} }},\n",
+            e.name(),
+            a.influx, a.decay, a.generate, a.overcome,
+            a.diffuse, a.ev_threshold, a.ev_window, a.wild, a.wild_cap,
         );
     }
     s.push_str("]);\n");
