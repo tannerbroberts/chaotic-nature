@@ -2,6 +2,10 @@
 /target/
 **/*.rs.bk
 
+# Scratch output of a tuning session — the live view rewrites this every time
+# you save. Rows get copied back into race.rs by hand, deliberately.
+src/race.tuned.rs
+
 # --- Godot 4+ ---
 client/.godot/
 *.translation

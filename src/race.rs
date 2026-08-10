@@ -111,10 +111,6 @@ impl ChannelMix {
     /// the middle — and a live view would happily render that intermediate lie
     /// as if it were a world you could reason about. The invariant holds after
     /// every single keystroke instead.
-    // Not a `checked_div`: the zero branch spreads the remainder evenly rather
-    // than substituting a fallback value, so the two arms are different
-    // behaviour and collapsing them would be wrong.
-    #[allow(clippy::manual_checked_ops)]
     pub fn set_rebalanced(&mut self, c: Channel, v: u16) {
         let i = c.index();
         let v = v.min(1000);
@@ -125,6 +121,9 @@ impl ChannelMix {
             .sum();
         self.0[i] = v;
 
+        // Not a `checked_div`: the zero case is a different rebalancing rule,
+        // not a fallback for a division that failed.
+        #[allow(clippy::manual_checked_ops)]
         if rest_now == 0 {
             // Nothing left to scale — spread the remainder evenly.
             let each = rest_target / (Channel::COUNT as u32 - 1);

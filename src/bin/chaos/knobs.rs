@@ -144,28 +144,21 @@ macro_rules! knob {
     };
 }
 
-/// Deposit and consume are the same four band edges twice over, so the band
-/// knobs are generated rather than typed out and mistyped.
-macro_rules! band_knobs {
-    ($prefix:literal, $field:ident) => {
-        [
-            knob!(concat!($prefix, " floor"), Fmt::Int, Step::Scale, 0, 1_000_000,
-                  "emitted every terrain tick even at zero demand — the world's own churn",
-                  |t, e| t.races[e].$field.floor as i64,
-                  |t, e, v| t.races[e].$field.set_edge(Edge::Floor, v as u32)),
-            knob!(concat!($prefix, " nominal"), Fmt::Int, Step::Scale, 0, 1_000_000,
-                  "the long-run average under sustained demand; the burst bucket refills at this rate",
-                  |t, e| t.races[e].$field.nominal as i64,
-                  |t, e, v| t.races[e].$field.set_edge(Edge::Nominal, v as u32)),
-            knob!(concat!($prefix, " ceiling"), Fmt::Int, Step::Scale, 0, 1_000_000,
-                  "never exceeded in one terrain tick, under any behaviour whatsoever",
-                  |t, e| t.races[e].$field.ceiling as i64,
-                  |t, e, v| t.races[e].$field.set_edge(Edge::Ceiling, v as u32)),
-            knob!(concat!($prefix, " burst"), Fmt::Int, Step::Add(1), 1, 500,
-                  "terrain ticks of nominal that can be banked and then spent all at once",
-                  |t, e| t.races[e].$field.burst_ticks as i64,
-                  |t, e, v| t.races[e].$field.burst_ticks = v as u32),
-        ]
+/// A band edge. Deposit and consume are the same three edges twice over, and
+/// each one has to go through `set_edge` so the band cannot be left inverted.
+macro_rules! edge_knob {
+    ($name:literal, $field:ident, $read:ident, $edge:expr, $help:literal) => {
+        knob!($name, Fmt::Int, Step::Scale, 0, 1_000_000, $help,
+              |t, e| t.races[e].$field.$read as i64,
+              |t, e, v| t.races[e].$field.set_edge($edge, v as u32))
+    };
+}
+
+macro_rules! burst_knob {
+    ($name:literal, $field:ident, $help:literal) => {
+        knob!($name, Fmt::Int, Step::Add(1), 1, 500, $help,
+              |t, e| t.races[e].$field.burst_ticks as i64,
+              |t, e, v| t.races[e].$field.burst_ticks = v as u32)
     };
 }
 
@@ -190,20 +183,33 @@ static BODY: [Knob; 15] = [
           "VIEW KNOB: bodies of this race the view keeps spawning back, as ordinary input commands",
           |t, e| t.restock[e] as i64,
           |t, e, v| t.restock[e] = v as u32),
+
     knob!("deposit unit", Fmt::Int, Step::Scale, 1, 100_000_000,
           "total a body writes to the terrain over its ENTIRE life, split across the channels",
           |t, e| t.races[e].deposit_unit as i64,
           |t, e, v| t.races[e].deposit_unit = v as u64),
-    BAND_DEP[0], BAND_DEP[1], BAND_DEP[2], BAND_DEP[3],
+    edge_knob!("dep floor", deposit, floor, Edge::Floor,
+               "granted every terrain tick even at zero demand — the world's own churn"),
+    edge_knob!("dep nominal", deposit, nominal, Edge::Nominal,
+               "long-run average under sustained demand; the burst bucket refills at this rate"),
+    edge_knob!("dep ceiling", deposit, ceiling, Edge::Ceiling,
+               "never exceeded in one terrain tick, under any behaviour whatsoever"),
+    burst_knob!("dep burst", deposit,
+                "terrain ticks of nominal that can be banked, then spent all at once"),
+
     knob!("consume unit", Fmt::Int, Step::Scale, 1, 100_000_000,
           "total a body takes from the terrain over its entire life",
           |t, e| t.races[e].consume_unit as i64,
           |t, e, v| t.races[e].consume_unit = v as u64),
-    BAND_CON[0], BAND_CON[1], BAND_CON[2], BAND_CON[3],
+    edge_knob!("con floor", consume, floor, Edge::Floor,
+               "taken every terrain tick even at zero demand"),
+    edge_knob!("con nominal", consume, nominal, Edge::Nominal,
+               "long-run average consumption under sustained demand"),
+    edge_knob!("con ceiling", consume, ceiling, Edge::Ceiling,
+               "never exceeded in one terrain tick"),
+    burst_knob!("con burst", consume,
+                "terrain ticks of nominal consumption that can be banked"),
 ];
-
-static BAND_DEP: [Knob; 4] = band_knobs!("dep", deposit);
-static BAND_CON: [Knob; 4] = band_knobs!("con", consume);
 
 /// One row per channel, twice. The mix is what makes two races with identical
 /// rates feel nothing alike, so it gets its own page rather than being buried.
@@ -264,7 +270,7 @@ pub fn abbrev(v: i64) -> String {
     let (sign, a) = if v < 0 { ("-", -v) } else { ("", v) };
     if a < 10_000 {
         format!("{sign}{a}")
-    } else if a < 10_000_000 {
+    } else if a < 1_000_000 {
         format!("{sign}{}.{}k", a / 1000, (a % 1000) / 100)
     } else {
         format!("{sign}{}.{}M", a / 1_000_000, (a % 1_000_000) / 100_000)
