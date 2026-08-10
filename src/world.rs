@@ -221,6 +221,9 @@ impl World {
                     let n = dir.normalized();
                     if !n.len_sq().is_zero() {
                         self.entities[i].heading = n;
+                        // A commanded body holds its course: instinct yields
+                        // to hands for a while.
+                        self.entities[i].steered_at = self.tick;
                     }
                 }
             }
@@ -242,10 +245,17 @@ impl World {
         }
     }
 
-    /// 2 — age every body, mark the expired, and let the living graze. Death
-    /// demand is charged here, at the corpse's cell, so a body that dies this
-    /// tick still terraforms with its own remains.
+    /// 2 — age, metabolise, feed, breed, starve, die. Death demand is charged
+    /// here, at the corpse's cell, so a body that dies this tick still
+    /// terraforms with its own remains.
+    ///
+    /// Population is not managed anywhere: it is the emergent sum of what
+    /// happens in this function. Enough food → surplus → offspring. Not
+    /// enough → starvation. An explosion or a collapse is a knob problem,
+    /// and both are visible failures rather than prevented ones.
     fn phase_aging(&mut self) {
+        let mut births: Vec<(Element, V2)> = Vec::new();
+
         for i in 0..self.entities.len() {
             let e = &mut self.entities[i];
             if !e.alive {
@@ -257,12 +267,39 @@ impl World {
             let a = self.races[el];
             let cell = self.terrain.cell_of(e.pos);
 
-            // The meal cadence. Real feeding arrives at S2; until then the
-            // OnConsume channel fires as a graze at the body's cell, staggered
-            // by id so a cohort does not all eat on the same tick.
+            // The meal cadence, staggered by id so a cohort does not all eat
+            // on the same tick. A body eats what its cell actually holds of
+            // the element it consumes — no more.
             if (self.tick + e.id as u64).is_multiple_of(RaceAttrs::FEED_PERIOD) {
-                self.terrain.add_dep(el, cell, a.deposit_per(DepChannel::OnConsume));
-                self.terrain.add_con(el, cell, a.consume_per(DepChannel::OnConsume));
+                let bite = self.terrain.bite(el.eats(), cell, a.bite);
+                if bite > 0 {
+                    e.energy = (e.energy + bite * a.digest as u32 / 1000)
+                        .min(crate::race::ENERGY_CAP);
+                    // Deposit-on-consume fires only on a real meal — Metal
+                    // writes to the world at the moment of refining.
+                    self.terrain.add_dep(el, cell, a.deposit_per(DepChannel::OnConsume));
+                }
+                // Breeding rides the same cadence: a fed body splits.
+                if e.energy >= a.repro_threshold && a.repro_cost > 0 {
+                    e.energy -= a.repro_cost;
+                    let off = V2::new(
+                        crate::rand::rand_signed(self.seed, self.tick, e.id, Channel::Repro)
+                            * Fx::from_int(2),
+                        crate::rand::rand_signed(
+                            self.seed,
+                            self.tick,
+                            e.id ^ 0x8888,
+                            Channel::Repro,
+                        ) * Fx::from_int(2),
+                    );
+                    births.push((el, e.pos + off));
+                }
+            }
+
+            // Upkeep: being alive costs energy; running dry costs hp.
+            e.energy = e.energy.saturating_sub(a.upkeep);
+            if e.energy == 0 {
+                e.hp -= a.starve_dmg as i32;
             }
 
             if e.is_expired() || e.hp <= 0 {
@@ -273,19 +310,71 @@ impl World {
                 self.terrain.add_con(el, cell, a.consume_per(DepChannel::OnDeath));
             }
         }
+
+        // Births apply after the pass, in parent order — ids stay ascending.
+        for (el, at) in births {
+            self.spawn(el, at);
+        }
     }
+
+    /// How often a body reconsiders where the food is, and how long an
+    /// explicit `SetHeading` suppresses that instinct.
+    const SEEK_PERIOD: u64 = 40;
+    const STEER_GRACE: u64 = 300;
+    /// How far ahead a body smells, in cells.
+    const SEEK_REACH: i32 = 3;
 
     /// 3 — move, jitter, and reflect off the bounds. Action demand lands at
     /// the cell the body moved *into*, which is what makes Water's wake a
     /// trail rather than a point.
+    ///
+    /// Movement carries the first default behaviour: **food-seeking**. On a
+    /// staggered cadence a body sniffs the four cardinal directions for the
+    /// element it eats and turns toward a clearly richer cell. This is what
+    /// lets wildlife find and hold a biome instead of drifting off it and
+    /// starving — and what makes overgrazing self-correcting, because an
+    /// emptied biome no longer pulls.
     fn phase_movement(&mut self) {
         let (seed, tick, size) = (self.seed, self.tick, self.size);
         let races = self.races;
 
         for i in 0..self.entities.len() {
-            let e = &mut self.entities[i];
-            if !e.alive {
+            // Seek reads the field, so it runs before the mutable borrow.
+            let (id, el, pos, steered_at, alive) = {
+                let e = &self.entities[i];
+                (e.id, e.element, e.pos, e.steered_at, e.alive)
+            };
+            if !alive {
                 continue;
+            }
+            let seek = if (tick + id as u64).is_multiple_of(Self::SEEK_PERIOD)
+                && tick.saturating_sub(steered_at) >= Self::STEER_GRACE
+            {
+                let prey = el.eats();
+                let here = self.terrain.sat_at(prey, self.terrain.cell_of(pos));
+                // Must beat the current cell by a quarter, or stay the course.
+                let mut best = here + here / 4;
+                let mut turn = None;
+                let reach = Fx::from_int(Self::SEEK_REACH);
+                for (dx, dy) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                    let probe = V2::new(
+                        (pos.x + reach * dx).clamp(Fx::ZERO, size),
+                        (pos.y + reach * dy).clamp(Fx::ZERO, size),
+                    );
+                    let s = self.terrain.sat_at(prey, self.terrain.cell_of(probe));
+                    if s > best {
+                        best = s;
+                        turn = Some(V2::new(Fx::from_int(dx), Fx::from_int(dy)));
+                    }
+                }
+                turn
+            } else {
+                None
+            };
+
+            let e = &mut self.entities[i];
+            if let Some(dir) = seek {
+                e.heading = dir;
             }
             let step = e.heading.scale(races[e.element].speed);
             let jitter = V2::new(
@@ -323,35 +412,92 @@ impl World {
         }
     }
 
-    /// 4 — pairwise separation. O(n²) is correct and fast enough for now; a
-    /// uniform-grid broadphase must iterate cells in index order to stay
-    /// deterministic when it arrives.
+    /// 4 — pairwise separation through a uniform-grid broadphase.
+    ///
+    /// Resource-based population means the body count is emergent, and a
+    /// runaway is a legitimate world state the simulation must survive — so
+    /// quadratic collision had to go. The grid is deterministic by
+    /// construction: buckets are filled in ascending entity order, every
+    /// entity scans a fixed neighbourhood in a fixed order, and each pair is
+    /// processed exactly once from its lower index.
     fn phase_collisions(&mut self) {
         let n = self.entities.len();
-        let mut fix = vec![V2::ZERO; n];
+        if n < 2 {
+            return;
+        }
 
+        // Bucket edge: the largest distance at which any pair can touch, so a
+        // colliding pair is never more than one bucket apart on either axis.
+        let max_r = Element::ALL
+            .iter()
+            .map(|e| self.races[*e].radius)
+            .fold(Fx::ZERO, |a, r| a.max(r));
+        let edge = ((max_r.raw() as i64 * 2) >> 16).max(1) as i32 + 1;
+        let side = self.size.floor_int().max(1);
+        let gw = (side / edge + 1) as usize;
+        let cells = gw * gw;
+
+        // Counting sort into a flat grid: stable, allocation-light, and the
+        // per-bucket entity order is ascending because the scatter pass runs
+        // in ascending order.
+        let key = |p: V2| -> usize {
+            let bx = (p.x.floor_int().clamp(0, side - 1) / edge) as usize;
+            let by = (p.y.floor_int().clamp(0, side - 1) / edge) as usize;
+            by * gw + bx
+        };
+        let mut count = vec![0u32; cells + 1];
+        for e in &self.entities {
+            count[key(e.pos) + 1] += 1;
+        }
+        for c in 1..=cells {
+            count[c] += count[c - 1];
+        }
+        let mut slot = count.clone();
+        let mut order = vec![0u32; n];
+        for (i, e) in self.entities.iter().enumerate() {
+            let k = key(e.pos);
+            order[slot[k] as usize] = i as u32;
+            slot[k] += 1;
+        }
+
+        let mut fix = vec![V2::ZERO; n];
         for i in 0..n {
             if !self.entities[i].alive {
                 continue;
             }
-            for j in (i + 1)..n {
-                if !self.entities[j].alive {
-                    continue;
+            let p = self.entities[i].pos;
+            let bx = (p.x.floor_int().clamp(0, side - 1) / edge) as isize;
+            let by = (p.y.floor_int().clamp(0, side - 1) / edge) as isize;
+            // Fixed neighbourhood order: row-major over the 3×3 block.
+            for dy in -1isize..=1 {
+                for dx in -1isize..=1 {
+                    let nx = bx + dx;
+                    let ny = by + dy;
+                    if nx < 0 || ny < 0 || nx as usize >= gw || ny as usize >= gw {
+                        continue;
+                    }
+                    let k = ny as usize * gw + nx as usize;
+                    for oi in count[k]..count[k + 1] {
+                        let j = order[oi as usize] as usize;
+                        if j <= i || !self.entities[j].alive {
+                            continue;
+                        }
+                        let a = &self.entities[i];
+                        let b = &self.entities[j];
+                        let d = b.pos - a.pos;
+                        let min = self.races[a.element].radius + self.races[b.element].radius;
+                        let dist_sq = d.len_sq();
+                        if dist_sq >= min * min || dist_sq.is_zero() {
+                            continue;
+                        }
+                        let dist = d.len();
+                        let overlap = (min - dist) * Fx::HALF;
+                        let push = d.normalized().scale(overlap);
+                        fix[i] = fix[i] - push;
+                        fix[j] = fix[j] + push;
+                        self.stats.collisions += 1;
+                    }
                 }
-                let a = &self.entities[i];
-                let b = &self.entities[j];
-                let d = b.pos - a.pos;
-                let min = self.races[a.element].radius + self.races[b.element].radius;
-                let dist_sq = d.len_sq();
-                if dist_sq >= min * min || dist_sq.is_zero() {
-                    continue;
-                }
-                let dist = d.len();
-                let overlap = (min - dist) * Fx::HALF;
-                let push = d.normalized().scale(overlap);
-                fix[i] = fix[i] - push;
-                fix[j] = fix[j] + push;
-                self.stats.collisions += 1;
             }
         }
 
@@ -387,6 +533,10 @@ impl World {
         }
 
         // Governors: demand in, bounded grants out, grants into the field.
+        // The grant is in whole units; the per-cell distribution divides by
+        // the demand total in ITS OWN scale (milli), or every deposit lands
+        // a thousandfold — a lesson learned from an 80-million-saturation
+        // map feeding a phantom herd.
         for el in Element::ALL {
             let dtotal = self.terrain.dep_total(el);
             let grant = self.deposit_gov.get_mut(el).settle(dtotal / MILLI);
@@ -394,13 +544,13 @@ impl World {
             self.stats.deposit_forced += grant.forced;
             self.last_deposit[el] = grant;
             let paid = grant.granted - grant.forced;
-            self.terrain.apply_deposit(el, paid, dtotal / MILLI, grant.forced, self.seed, self.tick);
+            self.terrain.apply_deposit(el, paid, dtotal, grant.forced, self.seed, self.tick);
 
             let ctotal = self.terrain.con_total(el);
             let cgrant = self.consume_gov.get_mut(el).settle(ctotal / MILLI);
             self.last_consume[el] = cgrant;
             let cpaid = cgrant.granted - cgrant.forced;
-            self.terrain.apply_consume(el, cpaid, ctotal / MILLI, cgrant.forced, self.seed, self.tick);
+            self.terrain.apply_consume(el, cpaid, ctotal, cgrant.forced, self.seed, self.tick);
         }
 
         // The field's own churn.
@@ -588,8 +738,14 @@ mod tests {
     fn fire_turns_over_many_times_before_earth_dies_once() {
         // The tempo axis, observed rather than asserted from the table. Wild
         // events may replenish Fire, so the claim is about deaths, not
-        // survivors: every original Fire died, no Earth did.
+        // survivors: every original Fire died, no Earth did. Metabolism is
+        // switched off so old age is the only clock in the room.
         let mut w = World::new(7, 48);
+        let mut races = RACES;
+        for e in Element::ALL {
+            races[e].upkeep = 0;
+        }
+        w.retune(races);
         w.seed_population(6);
         let log = InputLog::new();
         for _ in 0..5000 {
@@ -653,7 +809,7 @@ mod tests {
             w.step(&log);
         }
         assert!(
-            w.alive_count() > 0,
+            w.stats.births > 0,
             "an empty server should have grown wildlife by now"
         );
     }
@@ -777,5 +933,86 @@ mod tests {
         let mut b = a.clone();
         b.terrain.sat[2][100] ^= 1;
         assert_ne!(a.state_hash(), b.state_hash(), "a flipped saturation bit was invisible");
+    }
+
+    #[test]
+    fn a_body_starves_without_food() {
+        // Barren world: no influx, no wild events, nothing to eat. One Metal
+        // burns through its birth energy, then its hp, and dies long before
+        // its 12-hour lifespan.
+        let mut w = World::new(11, 32);
+        let mut ta = crate::terrain::TERRAIN;
+        for e in Element::ALL {
+            ta[e].influx = 0;
+            ta[e].wild = 0;
+            // A body's own deposits can cross the event gate and host a
+            // successor — the rebirth loop working. Shut it here: this test
+            // is about metabolism in isolation.
+            ta[e].ev_threshold = u16::MAX;
+        }
+        w.retune_terrain(ta);
+        w.spawn(Element::Metal, V2::new(Fx::from_int(16), Fx::from_int(16)));
+        let log = InputLog::new();
+        for _ in 0..2000 {
+            w.step(&log);
+        }
+        assert_eq!(w.stats.deaths_by[Element::Metal], 1, "starvation should have killed it");
+        assert_eq!(w.alive_count(), 0);
+    }
+
+    #[test]
+    fn a_fed_body_breeds_a_dynasty() {
+        // The other half of resource-based population: stand a long-lived
+        // Earth on rich Fire ground (Earth eats Fire) and offspring follow
+        // from surplus alone — no restocking, no commands.
+        let mut w = World::new(13, 32);
+        let mut ta = crate::terrain::TERRAIN;
+        for e in Element::ALL {
+            ta[e].influx = 0;
+            ta[e].wild = 0;
+            ta[e].ev_threshold = u16::MAX;
+        }
+        w.retune_terrain(ta);
+        for cell in 0..w.terrain.cells() {
+            w.terrain.sat[Element::Fire.index()][cell] = 50_000;
+        }
+        w.spawn(Element::Earth, V2::new(Fx::from_int(16), Fx::from_int(16)));
+        let log = InputLog::new();
+        for _ in 0..4000 {
+            w.step(&log);
+        }
+        assert!(
+            w.stats.births_by[Element::Earth] >= 3,
+            "a fed Earth should have bred, births: {}",
+            w.stats.births_by[Element::Earth]
+        );
+        assert!(w.alive_count() >= 3);
+    }
+
+    #[test]
+    fn population_is_resource_limited() {
+        // Default knobs, no restocking, long run: population must neither
+        // vanish nor grow without bound. Two probes — a ceiling, and a check
+        // that growth has stopped accelerating by the end.
+        let mut w = World::new(0xEC0, 48);
+        w.seed_population(10);
+        let log = InputLog::new();
+        for _ in 0..20_000 {
+            w.step(&log);
+        }
+        let mid = w.alive_count();
+        for _ in 0..10_000 {
+            w.step(&log);
+        }
+        let end = w.alive_count();
+        assert!(end > 0, "the world starved out entirely");
+        assert!(
+            end < 2500,
+            "population ran away on default knobs: {end} — the defaults need retuning"
+        );
+        assert!(
+            end < mid + mid / 2 + 50,
+            "population still accelerating on default knobs: {mid} → {end}"
+        );
     }
 }

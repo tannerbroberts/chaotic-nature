@@ -261,6 +261,20 @@ impl Terrain {
         }
     }
 
+    /// A meal: strip up to `max` saturation of `prey` from one cell,
+    /// returning what was actually taken.
+    ///
+    /// This bypasses the consume governor deliberately. Feeding is bounded by
+    /// the *local* form of bounded churn — a cell cannot lose what it does not
+    /// hold — which is a harder limit than any per-race rate, and it is the
+    /// coupling that makes overgrazing, famine and migration real.
+    pub fn bite(&mut self, prey: Element, cell: usize, max: u32) -> u32 {
+        let s = &mut self.sat[prey.index()][cell];
+        let take = (*s as u32).min(max);
+        *s -= take as u16;
+        take
+    }
+
     /// Clear the demand grids for the next accumulation period.
     pub fn clear_demand(&mut self) {
         for p in self.dep.iter_mut().chain(self.con.iter_mut()) {

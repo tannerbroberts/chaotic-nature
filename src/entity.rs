@@ -29,6 +29,12 @@ pub struct Entity {
     /// cohort born together does not die together.
     pub lifespan: u64,
     pub hp: i32,
+    /// The metabolic account. Fed by biting the cell underfoot, drained by
+    /// upkeep every tick; surplus becomes offspring, deficit becomes hp loss.
+    pub energy: u32,
+    /// Tick of the last explicit `SetHeading` — a steered body suppresses its
+    /// own food-seeking for a while, so a player's hands beat instinct.
+    pub steered_at: u64,
     pub alive: bool,
     /// Set by movement, read by demand accumulation, cleared each tick.
     pub acted: bool,
@@ -46,6 +52,8 @@ impl Entity {
             age: 0,
             lifespan: roll_lifespan(a, seed, tick, id),
             hp: 100,
+            energy: a.birth_energy,
+            steered_at: 0,
             alive: true,
             acted: false,
         }
@@ -68,6 +76,8 @@ impl Hashable for Entity {
             .u64(self.age)
             .u64(self.lifespan)
             .i32(self.hp)
+            .u32(self.energy)
+            .u64(self.steered_at)
             .bool(self.alive)
             .bool(self.acted);
     }

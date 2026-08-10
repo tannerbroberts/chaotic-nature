@@ -33,6 +33,8 @@ pub enum Channel {
     Events = 9,
     /// Where floor-churn (deposition nobody asked for) lands on the map.
     WildChurn = 10,
+    /// Where an offspring lands relative to its parent.
+    Repro = 11,
     /// Reserved for ad-hoc debugging. Never read by shipped simulation code.
     Debug = 255,
 }

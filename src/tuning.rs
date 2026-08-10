@@ -24,11 +24,15 @@ pub struct Tuning {
 }
 
 impl Tuning {
+    /// `per_race` is only the *initial* seeding; from there population is
+    /// resource-based — bodies that eat enough breed, bodies that cannot
+    /// starve. Restock defaults to off and exists as a debug override.
     pub fn new(per_race: u32) -> Tuning {
+        let _ = per_race;
         Tuning {
             races: RACES,
             terrain: TERRAIN,
-            restock: PerElement::filled(per_race),
+            restock: PerElement::filled(0),
         }
     }
 }
@@ -180,7 +184,7 @@ static BODY: [Knob; 15] = [
           |t, e| (t.races[e].radius.raw() as i64 * 100 + 32_768) / 65_536,
           |t, e, v| t.races[e].radius = Fx::ratio(v as i32, 100)),
     knob!("restock to", Fmt::Int, Step::Add(5), 0, 250,
-          "VIEW KNOB: bodies of this race the view keeps spawning back, as ordinary input commands",
+          "DEBUG override, default off: keep spawning back to this count. Population is otherwise resource-based — fed bodies breed, starved ones die",
           |t, e| t.restock[e] as i64,
           |t, e, v| t.restock[e] = v as u32),
 
@@ -278,8 +282,40 @@ static TERRAIN_KNOBS: [Knob; 9] = [
           |t, e, v| t.terrain[e].wild_cap = v as u32),
 ];
 
+static METABOLISM: [Knob; 7] = [
+    knob!("birth energy", Fmt::Int, Step::Scale, 1, 100_000,
+          "energy a body is born holding — its head start before the first meal",
+          |t, e| t.races[e].birth_energy as i64,
+          |t, e, v| t.races[e].birth_energy = v as u32),
+    knob!("upkeep", Fmt::Int, Step::Add(1), 0, 1_000,
+          "energy burned per tick just by being alive; the metronome hunger marches to",
+          |t, e| t.races[e].upkeep as i64,
+          |t, e, v| t.races[e].upkeep = v as u32),
+    knob!("bite", Fmt::Int, Step::Scale, 1, 100_000,
+          "the most saturation one meal strips from the cell underfoot — bounded by what is actually there",
+          |t, e| t.races[e].bite as i64,
+          |t, e, v| t.races[e].bite = v as u32),
+    knob!("digest ‰", Fmt::Permille, Step::Add(25), 0, 1000,
+          "share of a bite that becomes energy; the rest is spilled",
+          |t, e| t.races[e].digest as i64,
+          |t, e, v| t.races[e].digest = v as u16),
+    knob!("breed at", Fmt::Int, Step::Scale, 1, 200_000,
+          "energy at which a body splits off an offspring — THE population knob",
+          |t, e| t.races[e].repro_threshold as i64,
+          |t, e, v| t.races[e].repro_threshold = v as u32),
+    knob!("breed cost", Fmt::Int, Step::Scale, 1, 200_000,
+          "energy spent per offspring; the child gets birth energy, entropy keeps the difference",
+          |t, e| t.races[e].repro_cost as i64,
+          |t, e, v| t.races[e].repro_cost = v as u32),
+    knob!("starve dmg", Fmt::Int, Step::Add(1), 0, 100,
+          "hp lost per tick at zero energy — how fast famine kills",
+          |t, e| t.races[e].starve_dmg as i64,
+          |t, e, v| t.races[e].starve_dmg = v as u16),
+];
+
 pub static PAGES: &[Page] = &[
     Page { title: "body & rates", knobs: &BODY },
+    Page { title: "metabolism & breeding  (population is what these do)", knobs: &METABOLISM },
     Page { title: "channel mix ‰  (edits rebalance the rest to keep the sum at 1000)", knobs: &MIX },
     Page { title: "terrain & incarnation", knobs: &TERRAIN_KNOBS },
 ];
@@ -377,6 +413,13 @@ pub fn write_table(t: &Tuning) -> std::io::Result<String> {
              consume_unit: {},\n        \
              consume: RateBand::new({}, {}, {}, {}),\n        \
              consume_mix: ChannelMix::new({}, {}, {}, {}, {}),\n        \
+             birth_energy: {},\n        \
+             upkeep: {},\n        \
+             bite: {},\n        \
+             digest: {},\n        \
+             repro_threshold: {},\n        \
+             repro_cost: {},\n        \
+             starve_dmg: {},\n        \
              fantasy: {:?},\n    }},\n",
             e.name(),
             a.lifespan,
@@ -389,6 +432,8 @@ pub fn write_table(t: &Tuning) -> std::io::Result<String> {
             a.consume_unit,
             a.consume.floor, a.consume.nominal, a.consume.ceiling, a.consume.burst_ticks,
             mix(true, 0), mix(true, 1), mix(true, 2), mix(true, 3), mix(true, 4),
+            a.birth_energy, a.upkeep, a.bite, a.digest,
+            a.repro_threshold, a.repro_cost, a.starve_dmg,
             a.fantasy,
         );
     }

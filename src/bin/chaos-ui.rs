@@ -489,6 +489,32 @@ impl App {
                                 .text(format!("{} of {} lived", duration(e.age), duration(e.lifespan))),
                         )
                         .on_hover_text("A body ages at its race's tempo and dies of old age. Death is not failure — the corpse terraforms the cell it falls on.");
+
+                        let a = self.t.races[el];
+                        let efrac = (e.energy as f32 / a.repro_threshold.max(1) as f32).min(1.0);
+                        ui.add(
+                            egui::ProgressBar::new(efrac)
+                                .fill(Color32::from_rgb(235, 200, 90))
+                                .text(format!("energy {} — offspring at {}", e.energy, a.repro_threshold)),
+                        )
+                        .on_hover_text(format!(
+                            "You eat {} ground where you stand — a meal every {} ticks, bounded by what the cell holds. \
+                             Fill this bar and your body splits off another {}.",
+                            el.eats().name(),
+                            pentagram::race::RaceAttrs::FEED_PERIOD,
+                            el.name(),
+                        ));
+                        if e.energy == 0 {
+                            ui.label(
+                                RichText::new(format!(
+                                    "STARVING — stand on {} ground to eat",
+                                    el.eats().name()
+                                ))
+                                .color(Color32::from_rgb(230, 90, 70))
+                                .strong(),
+                            );
+                        }
+
                         ui.label("Click the ground to move toward it. esc releases the body — it lives on as wildlife.");
                         if ui.button("Release the body").clicked() {
                             self.mode = Mode::Soul;
@@ -580,6 +606,29 @@ impl App {
             .default_open(true)
             .show(ui, |ui| {
                 ui.label(RichText::new("Pick a race, drag a slider — the running world updates. Hover any slider for what it does.").weak());
+
+                egui::CollapsingHeader::new("Master ratios — all five races at once")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("Bump a whole axis up or down; the ratios between races are preserved.").weak());
+                        let mut touched = false;
+                        for m in MASTERS {
+                            ui.horizontal(|ui| {
+                                for (label, n, d) in [("÷2", 1u64, 2u64), ("÷1.25", 4, 5), ("×1.25", 5, 4), ("×2", 2, 1)] {
+                                    if ui.small_button(label).clicked() {
+                                        (m.apply)(&mut self.t, n, d);
+                                        touched = true;
+                                    }
+                                }
+                                ui.label(m.name).on_hover_text(m.help);
+                            });
+                        }
+                        if touched {
+                            self.retuned = true;
+                        }
+                    });
+                ui.separator();
+
                 ui.horizontal(|ui| {
                     for e in Element::ALL {
                         let sel = self.knob_element == e;
@@ -704,6 +753,7 @@ impl App {
                 };
 
                 // Climate springs — permanent geography, worth knowing.
+                let mut springs: Vec<(Pos2, Element)> = Vec::new();
                 for e in Element::ALL {
                     for k in 0..pentagram::terrain::HOTSPOTS {
                         let (hx, hy) = hotspot(self.seed, e, k, side);
@@ -718,6 +768,7 @@ impl App {
                             ecolor(e).gamma_multiply(0.5),
                             Stroke::new(1.0_f32, ecolor(e)),
                         ));
+                        springs.push((c, e));
                     }
                 }
 
@@ -768,6 +819,12 @@ impl App {
                             .filter(|(d, _)| *d < 16.0)
                             .min_by(|a, b| a.0.total_cmp(&b.0));
 
+                        let near_spring = springs
+                            .iter()
+                            .map(|(p, e)| (p.distance(hp), *e))
+                            .filter(|(d, _)| *d < 10.0)
+                            .min_by(|a, b| a.0.total_cmp(&b.0));
+
                         if let Some((_, ev)) = near {
                             let el = ev.element;
                             let left = duration(ev.closes.saturating_sub(self.w.tick));
@@ -784,6 +841,21 @@ impl App {
                                     ui.label(RichText::new(format!("✶ {} birth-moment", el.name())).color(ecolor(el)).strong());
                                     ui.label(format!("closes in {left}"));
                                     ui.label(RichText::new(act).weak());
+                                },
+                            );
+                        } else if let Some((_, se)) = near_spring {
+                            egui::show_tooltip_at_pointer(
+                                ctx,
+                                ui.layer_id(),
+                                egui::Id::new("springtip"),
+                                |ui| {
+                                    ui.label(RichText::new(format!("◆ {} climate spring", se.name())).color(ecolor(se)).strong());
+                                    ui.label(format!(
+                                        "Geography: this ground is fed {} saturation every terrain tick, forever. \
+                                         Springs never move — biomes grow around them, and {} eats what grows here.",
+                                        se.name(),
+                                        se.eaten_by().name(),
+                                    ));
                                 },
                             );
                         } else {
@@ -884,6 +956,107 @@ impl App {
         }
     }
 }
+
+/// A master ratio control: one axis, scaled across all five races at once by
+/// `num / den`, ratios preserved. Buttons rather than sliders so there is no
+/// base value to track — each press is a plain multiplicative nudge.
+struct Master {
+    name: &'static str,
+    help: &'static str,
+    apply: fn(&mut Tuning, u64, u64),
+}
+
+fn scale_u64(v: &mut u64, n: u64, d: u64, lo: u64, hi: u64) {
+    *v = (v.saturating_mul(n) / d.max(1)).clamp(lo, hi);
+}
+
+fn scale_u32(v: &mut u32, n: u64, d: u64, lo: u32, hi: u32) {
+    *v = ((*v as u64).saturating_mul(n) / d.max(1)).clamp(lo as u64, hi as u64) as u32;
+}
+
+fn scale_u16(v: &mut u16, n: u64, d: u64, lo: u16, hi: u16) {
+    *v = ((*v as u64).saturating_mul(n) / d.max(1)).clamp(lo as u64, hi as u64) as u16;
+}
+
+const MASTERS: &[Master] = &[
+    Master {
+        name: "lifespan",
+        help: "How long every body lives. Down: the whole world turns over faster.",
+        apply: |t, n, d| for e in Element::ALL {
+            scale_u64(&mut t.races[e].lifespan, n, d, 100, 7_776_000);
+        },
+    },
+    Master {
+        name: "movement speed",
+        help: "The ecology axis with a cliff in it: enough mobility and biomes stop coexisting.",
+        apply: |t, n, d| for e in Element::ALL {
+            let raw = t.races[e].speed.raw() as i64;
+            let scaled = (raw.saturating_mul(n as i64) / d.max(1) as i64).clamp(65, 4 * 65_536);
+            t.races[e].speed = Fx::from_raw(scaled as i32);
+        },
+    },
+    Master {
+        name: "deposition",
+        help: "How hard every race writes itself into the terrain over a life.",
+        apply: |t, n, d| for e in Element::ALL {
+            scale_u64(&mut t.races[e].deposit_unit, n, d, 1, 100_000_000);
+        },
+    },
+    Master {
+        name: "consumption",
+        help: "The ambient drain every race takes from the terrain over a life.",
+        apply: |t, n, d| for e in Element::ALL {
+            scale_u64(&mut t.races[e].consume_unit, n, d, 1, 100_000_000);
+        },
+    },
+    Master {
+        name: "hunger (upkeep)",
+        help: "Energy burned per tick by being alive. Up: leaner world, more starvation.",
+        apply: |t, n, d| for e in Element::ALL {
+            scale_u32(&mut t.races[e].upkeep, n, d, 0, 1_000);
+        },
+    },
+    Master {
+        name: "bite size",
+        help: "How much one meal can strip from the cell underfoot.",
+        apply: |t, n, d| for e in Element::ALL {
+            scale_u32(&mut t.races[e].bite, n, d, 1, 100_000);
+        },
+    },
+    Master {
+        name: "fertility",
+        help: "Up: breeding needs less surplus, populations run away sooner. (Scales the breeding threshold and cost down.)",
+        apply: |t, n, d| for e in Element::ALL {
+            // Inverse: more fertility = lower bars. Cost keeps its floor above
+            // birth energy so the table stays valid.
+            let floor_cost = t.races[e].birth_energy.max(1);
+            scale_u32(&mut t.races[e].repro_cost, d, n, floor_cost, 200_000);
+            let floor_thr = t.races[e].repro_cost;
+            scale_u32(&mut t.races[e].repro_threshold, d, n, floor_thr, 200_000);
+        },
+    },
+    Master {
+        name: "climate influx",
+        help: "How strongly geography feeds its biomes — the base of the whole food chain.",
+        apply: |t, n, d| for e in Element::ALL {
+            scale_u32(&mut t.terrain[e].influx, n, d, 0, 100_000);
+        },
+    },
+    Master {
+        name: "terrain decay",
+        help: "How fast the land forgets. Down: scars last for days.",
+        apply: |t, n, d| for e in Element::ALL {
+            scale_u16(&mut t.terrain[e].decay, n, d, 0, 1_000);
+        },
+    },
+    Master {
+        name: "wild sparks",
+        help: "How often lightning offers a way in, anywhere, regardless of terrain.",
+        apply: |t, n, d| for e in Element::ALL {
+            scale_u16(&mut t.terrain[e].wild, n, d, 0, 1_000);
+        },
+    },
+];
 
 /// One knob as a slider, driven entirely by the shared tuning table — the
 /// name, range, logarithmic feel and hover help all come from the same row

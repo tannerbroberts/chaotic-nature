@@ -251,6 +251,30 @@ pub struct RaceAttrs {
     pub consume: RateBand,
     pub consume_mix: ChannelMix,
 
+    // ------------------------------------------------------------------
+    // Metabolism — the S2 core. Population is not managed; it is what these
+    // numbers do. A body eats what its cell actually holds, spends energy by
+    // being alive, breeds on surplus, and starves on deficit. A population
+    // explosion is a runaway to *tune*, not a condition to guard against.
+    // ------------------------------------------------------------------
+    /// Energy a body is born holding.
+    pub birth_energy: u32,
+    /// Energy burned per sim tick simply by being alive.
+    pub upkeep: u32,
+    /// The most saturation one meal can strip from the cell underfoot.
+    /// Feeding is bounded by what is actually there — the local, harder form
+    /// of bounded churn.
+    pub bite: u32,
+    /// Per-mille of a bite that becomes energy; the rest is spilled.
+    pub digest: u16,
+    /// Energy at which a body splits off an offspring.
+    pub repro_threshold: u32,
+    /// Energy spent to do so. Must exceed `birth_energy`; the difference is
+    /// entropy's cut.
+    pub repro_cost: u32,
+    /// Hp lost per tick at zero energy.
+    pub starve_dmg: u16,
+
     /// One-line statement of the fantasy the numbers above are serving.
     pub fantasy: &'static str,
 }
@@ -262,6 +286,9 @@ impl RaceAttrs {
             && self.deposit_mix.is_valid()
             && self.consume_mix.is_valid()
             && self.lifespan > 0
+            && self.digest <= 1000
+            && self.repro_cost >= self.birth_energy
+            && self.repro_threshold >= self.repro_cost
     }
 
     /// Tempo parity metric — deposit unit per 1000 ticks of life. Holding this
@@ -321,6 +348,9 @@ impl RaceAttrs {
     }
 }
 
+/// A body can bank this much energy and no more — paradise saturates.
+pub const ENERGY_CAP: u32 = 200_000;
+
 /// Fixed-point scale for demand accumulation. Demand is summed in milli-units
 /// and divided down once, at settlement.
 pub const MILLI: u64 = 1000;
@@ -342,6 +372,13 @@ pub const RACES: PerElement<RaceAttrs> = PerElement([
         consume_unit: 22_000,
         consume: RateBand::new(300, 900, 1800, 6),
         consume_mix: ChannelMix::new(50, 50, 100, 500, 300),
+        birth_energy: 400,
+        upkeep: 2,
+        bite: 900,
+        digest: 550,
+        repro_threshold: 1300,
+        repro_cost: 550,
+        starve_dmg: 4,
         fantasy: "Grows in place. Slow, patient, and very hard to remove once rooted.",
     },
     // ---------------------------------------------------------------- FIRE
@@ -360,6 +397,13 @@ pub const RACES: PerElement<RaceAttrs> = PerElement([
         consume_unit: 4_400,
         consume: RateBand::new(150, 1100, 7000, 20),
         consume_mix: ChannelMix::new(0, 100, 400, 500, 0),
+        birth_energy: 350,
+        upkeep: 3,
+        bite: 2200,
+        digest: 450,
+        repro_threshold: 1200,
+        repro_cost: 500,
+        starve_dmg: 6,
         fantasy: "Born from a lightning strike, burns hot, dies fast, and the ground remembers.",
     },
     // --------------------------------------------------------------- EARTH
@@ -378,6 +422,13 @@ pub const RACES: PerElement<RaceAttrs> = PerElement([
         consume_unit: 2_400_000,
         consume: RateBand::new(600, 850, 1200, 2),
         consume_mix: ChannelMix::new(0, 50, 50, 200, 700),
+        birth_energy: 600,
+        upkeep: 2,
+        bite: 1600,
+        digest: 600,
+        repro_threshold: 2000,
+        repro_cost: 800,
+        starve_dmg: 4,
         fantasy: "Ancient. Lives for a fortnight and terraforms by refusing to move.",
     },
     // --------------------------------------------------------------- METAL
@@ -395,6 +446,13 @@ pub const RACES: PerElement<RaceAttrs> = PerElement([
         consume_unit: 96_000,
         consume: RateBand::new(200, 950, 2400, 12),
         consume_mix: ChannelMix::new(100, 50, 250, 600, 0),
+        birth_energy: 450,
+        upkeep: 2,
+        bite: 1100,
+        digest: 500,
+        repro_threshold: 1500,
+        repro_cost: 650,
+        starve_dmg: 4,
         fantasy: "Precise and scheduled. Writes to the world only at the moment of forging.",
     },
     // --------------------------------------------------------------- WATER
@@ -412,6 +470,13 @@ pub const RACES: PerElement<RaceAttrs> = PerElement([
         consume_unit: 12_000,
         consume: RateBand::new(250, 1000, 3200, 10),
         consume_mix: ChannelMix::new(0, 100, 550, 300, 50),
+        birth_energy: 400,
+        upkeep: 2,
+        bite: 1200,
+        digest: 500,
+        repro_threshold: 1300,
+        repro_cost: 550,
+        starve_dmg: 4,
         fantasy: "Rhythmic and tidal. Terraforms by flowing, and stops when it stops.",
     },
 ]);
@@ -451,7 +516,14 @@ impl Hashable for RaceAttrs {
             .i32(self.speed.raw())
             .i32(self.radius.raw())
             .u64(self.deposit_unit)
-            .u64(self.consume_unit);
+            .u64(self.consume_unit)
+            .u32(self.birth_energy)
+            .u32(self.upkeep)
+            .u32(self.bite)
+            .u16(self.digest)
+            .u32(self.repro_threshold)
+            .u32(self.repro_cost)
+            .u16(self.starve_dmg);
         self.deposit.hash_into(h);
         self.deposit_mix.hash_into(h);
         self.consume.hash_into(h);

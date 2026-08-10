@@ -18,21 +18,27 @@ disagreed about who decides what is true, the sim won and the loser is in
 
 ## Playing it
 
-`chaos` opens a window. You arrive as a **soul** over a living map: the ground
-glows with elemental saturation (colours blend where elements meet), wildlife
-drifts over it, climate springs `◆` feed their element forever, and
-**birth-moments** pulse as ringed marks. Terrain past its threshold opens one;
-wild sparks — the lightning strike — can open anywhere, which keeps every race
-joinable no matter what the map is doing.
+`chaos` opens a window. You arrive as a **soul** over a living map: tiles show
+their strongest element at one of four strengths, wildlife drifts over them,
+climate springs `◆` feed their element forever, and **birth-moments** pulse as
+ringed marks. Terrain past its threshold opens one; wild sparks — the lightning
+strike — can open anywhere, which keeps every race joinable no matter what the
+map is doing.
 
 **Hover anything to learn what it is** — every patch of ground shows its five
 saturations, every marker explains itself. **Click a birth-moment** (on the map
 or in the side list) to be born there as that race. The sim slows to
-near-real-time, **click the ground to move toward it**, and the life bar shows
-your body spending its span. Die — or release the body, which lives on as
-wildlife — and you are a soul again choosing another moment. Fire lives eight
-minutes; Earth a fortnight. Unclaimed moments become wildlife births, so an
-empty world grows life on its own.
+near-real-time, **click the ground to move toward it**, watch the life bar
+spend your span and the energy bar fill toward an offspring. Die — or release
+the body, which lives on as wildlife — and you are a soul again choosing
+another moment. Fire lives eight minutes; Earth a fortnight.
+
+**Population is not managed — it is metabolic.** Every body eats what its cell
+actually holds of the element it consumes, burns energy each tick by being
+alive, splits off an offspring on surplus, and starves on deficit. Enough
+material → more entities; a population explosion is a *tuning* failure to
+watch happen, not a condition the program forbids. Unclaimed birth-moments
+become wildlife, so even a starved-out world grows life again.
 
 The side panel carries the rest: the mode card says what you are and what you
 can do right now, the event list shows every open moment with its remaining
@@ -50,9 +56,13 @@ chaos soak [ticks]     long headless run + per-race report
 chaos test             full suite (110 tests)
 ```
 
-The **Knobs** section of the side panel is the whole tuning table as sliders —
-pick an element, drag a value, hover for what it does; the world updates as it
-runs. "Write tuned table" dumps the current values to `src/race.tuned.rs`.
+The **Tuning** section of the side panel is the whole table as sliders — pick
+an element, drag a value, hover for what it does; the world updates as it runs.
+**Master ratios** sit above the per-race sliders: one row per axis (lifespan,
+movement speed, deposition, consumption, hunger, bite, fertility, climate
+influx, terrain decay, wild sparks) with ÷2 ÷1.25 ×1.25 ×2 buttons that scale
+all five races at once, ratios preserved. "Write tuned table" dumps the current
+values to `src/race.tuned.rs`.
 Shipped values live in `src/race.rs` and `src/terrain.rs`. Both clients drive
 the identical knob table from `src/tuning.rs`.
 
