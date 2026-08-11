@@ -54,12 +54,12 @@ struct Args {
 
 impl Args {
     fn parse() -> Args {
-        let mut a = Args { size: 96, pop: 60, speed: 120.0, seed: 0xBEEF };
+        let mut a = Args { size: 256, pop: 60, speed: 120.0, seed: 0xBEEF };
         let argv: Vec<String> = std::env::args().skip(1).collect();
         for (i, arg) in argv.iter().enumerate() {
             let v = argv.get(i + 1).and_then(|s| s.parse::<i64>().ok());
             match arg.as_str() {
-                "--size" => a.size = v.unwrap_or(96).clamp(16, 4096) as i32,
+                "--size" => a.size = v.unwrap_or(256).clamp(16, 4096) as i32,
                 "--pop" => a.pop = v.unwrap_or(60).clamp(0, 250) as u32,
                 "--speed" => a.speed = v.unwrap_or(120).clamp(1, 200_000) as f64,
                 "--seed" => a.seed = v.unwrap_or(0xBEEF) as u64,

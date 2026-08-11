@@ -19,7 +19,7 @@ pub const JITTER: Fx = Fx::ratio(1, 400);
 
 /// Most incarnation events one element may have open at once. Keeps the sky
 /// legible: a soul chooses among a handful of moments, not a wall of them.
-pub const EVENTS_CAP: usize = 4;
+pub const EVENTS_CAP: usize = 8;
 
 /// An open incarnation event: a place and a window in which a soul may take a
 /// body of this element. Unclaimed events do not simply vanish — at expiry the
@@ -334,7 +334,7 @@ impl World {
     const SEEK_PERIOD_HUNGRY: u64 = 10;
     const STEER_GRACE: u64 = 300;
     /// How far ahead a body smells, in cells.
-    const SEEK_REACH: i32 = 6;
+    const SEEK_REACH: i32 = 8;
 
     /// 3 — move, jitter, and reflect off the bounds. Action demand lands at
     /// the cell the body moved *into*, which is what makes Water's wake a
@@ -370,7 +370,9 @@ impl World {
                 && tick.saturating_sub(steered_at) >= Self::STEER_GRACE
             {
                 let prey = el.eats();
-                let here = self.terrain.sat_at(prey, self.terrain.cell_of(pos));
+                // u32 throughout: a saturated pile times 1.25 overflows u16,
+                // and the overflow guard rightly refused to let it slide.
+                let here = self.terrain.sat_at(prey, self.terrain.cell_of(pos)) as u32;
                 // Must beat the current cell by a quarter, or stay the course.
                 let mut best = here + here / 4;
                 let mut turn = None;
@@ -384,7 +386,7 @@ impl World {
                         (pos.x + reach * dx).clamp(Fx::ZERO, size),
                         (pos.y + reach * dy).clamp(Fx::ZERO, size),
                     );
-                    let s = self.terrain.sat_at(prey, self.terrain.cell_of(probe));
+                    let s = self.terrain.sat_at(prey, self.terrain.cell_of(probe)) as u32;
                     if s > best {
                         best = s;
                         turn = Some(V2::new(Fx::from_int(dx), Fx::from_int(dy)).normalized());
@@ -1020,10 +1022,11 @@ mod tests {
 
     #[test]
     fn population_is_resource_limited() {
-        // Default knobs, no restocking, long run: population must neither
-        // vanish nor grow without bound. Two probes — a ceiling, and a check
-        // that growth has stopped accelerating by the end.
-        let mut w = World::new(0xEC0, 48);
+        // Default knobs at the shipped territory size, no restocking, long
+        // run: population must neither vanish nor grow without bound. Two
+        // probes — a ceiling, and a check that growth has stopped
+        // accelerating by the end.
+        let mut w = World::new(0xEC0, 256);
         w.seed_population(10);
         let log = InputLog::new();
         for _ in 0..20_000 {

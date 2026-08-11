@@ -18,9 +18,11 @@ disagreed about who decides what is true, the sim won and the loser is in
 
 ## Playing it
 
-`chaos` opens a window. You arrive as a **soul** over a living map: tiles show
-their strongest element at one of four strengths, wildlife drifts over them,
-and **birth-moments** pulse as ringed marks. There is no geography — no
+`chaos` opens a window onto a **full territory — 256×256 cells**, the size a
+shard will actually run, so distance means something: a life is spent somewhere,
+not everywhere. You arrive as a **soul** over a living map: tiles show their
+strongest element at one of four strengths, wildlife drifts over them, and
+**birth-moments** pulse as ringed marks. There is no geography — no
 springs, no fixed biomes. The land's primary production is the cycle itself:
 bodies deposit their element where they live and die, the governor floors fall
 as roaming *rain showers* wherever demand runs short, and each race's element
@@ -36,6 +38,25 @@ near-real-time, **click the ground to move toward it**, watch the life bar
 spend your span and the energy bar fill toward an offspring. Die — or release
 the body, which lives on as wildlife — and you are a soul again choosing
 another moment. Fire lives eight minutes; Earth a fortnight.
+
+**The five races are three temperaments**, expressed purely through their
+terraforming and metabolic numbers, and the ring makes them feed each other:
+
+- **Wood and Earth are builders** — slow, clumped, existence-depositing,
+  breeding on a steady trickle. Each lives off the *behaviour* of its prey:
+  Wood roots where Water's trails run; Earth harvests where Fire died.
+- **Fire is the aggressor** — fast, wasteful, huge bite. It exists as raids,
+  not populations: born near Wood's groves, it strips them, breeds mid-raid,
+  dies young, and its corpses are Earth's harvest.
+- **Metal and Water are nomads** — far-ranging famine-endurers that breed only
+  on a trove (breeding thresholds several meals deep). Metal prospects Earth's
+  massifs and forges veins; Water drinks the veins and wears trails.
+
+`diag` measures these as signatures — spread, range, birth burstiness — and
+the shipped tables were tuned until they showed: builders tight and steady,
+nomads ranging and bursty, Fire a churn of birth-storms. Wild sparks strike
+anywhere, but only *quicken* where the ground can feed the newborn — the nest
+must be viable habitat, which is what lets colonies form at full scale.
 
 **Population is not managed — it is metabolic.** Every body eats what its cell
 actually holds of the element it consumes, burns energy each tick by being

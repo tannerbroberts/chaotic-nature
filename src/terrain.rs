@@ -92,15 +92,15 @@ impl Hashable for TerrainAttrs {
 /// brief and unreservable, Earth's builds for half a simulated hour.
 pub const TERRAIN: PerElement<TerrainAttrs> = PerElement([
     // Wood
-    TerrainAttrs { decay: 8, generate: 14, overcome: 6, diffuse: 40, ev_threshold: 9000, ev_window: 800, wild: 300, wild_cap: 80 },
+    TerrainAttrs { decay: 4, generate: 14, overcome: 6, diffuse: 40, ev_threshold: 7000, ev_window: 600, wild: 450, wild_cap: 120 },
     // Fire
-    TerrainAttrs { decay: 14, generate: 22, overcome: 9, diffuse: 60, ev_threshold: 9000, ev_window: 200, wild: 300, wild_cap: 80 },
+    TerrainAttrs { decay: 7, generate: 22, overcome: 9, diffuse: 60, ev_threshold: 7000, ev_window: 200, wild: 450, wild_cap: 120 },
     // Earth
-    TerrainAttrs { decay: 5, generate: 9, overcome: 6, diffuse: 25, ev_threshold: 9000, ev_window: 3000, wild: 300, wild_cap: 80 },
+    TerrainAttrs { decay: 3, generate: 9, overcome: 6, diffuse: 25, ev_threshold: 7000, ev_window: 1200, wild: 450, wild_cap: 120 },
     // Metal
-    TerrainAttrs { decay: 6, generate: 11, overcome: 7, diffuse: 30, ev_threshold: 9000, ev_window: 1500, wild: 300, wild_cap: 80 },
+    TerrainAttrs { decay: 3, generate: 11, overcome: 7, diffuse: 30, ev_threshold: 7000, ev_window: 1000, wild: 450, wild_cap: 120 },
     // Water
-    TerrainAttrs { decay: 9, generate: 16, overcome: 8, diffuse: 70, ev_threshold: 9000, ev_window: 400, wild: 300, wild_cap: 80 },
+    TerrainAttrs { decay: 5, generate: 16, overcome: 8, diffuse: 70, ev_threshold: 7000, ev_window: 400, wild: 450, wild_cap: 120 },
 ]);
 
 /// Cells the floor-churn scatters across each settle. With geography gone,
@@ -420,15 +420,34 @@ impl Terrain {
             .map(|(i, _)| i)
     }
 
-    /// A wild event site — the lightning strike. Pure chance, anywhere,
-    /// regardless of terrain. This is what guarantees every race is always
-    /// joinable on every server.
+    /// A wild event site — the lightning strike. Chance decides *whether* a
+    /// spark falls; the land decides *where it quickens*: of a handful of
+    /// random cells, the one whose ground best feeds this race's newborn
+    /// wins. Sparks still strike anywhere — a barren world gets barren
+    /// births, so every race stays joinable on every server — but where
+    /// there is habitat, the nest is viable habitat. (The flame nest needs
+    /// the ground to hold hot through gestation; here, the newborn needs
+    /// something to eat.)
     pub fn wild_site(&self, e: Element, permille: u16, seed: u64, tick: u64) -> Option<usize> {
         let salt = 0x57 << 8 | e.index() as u32;
         if !rand_chance(seed, tick, salt, Channel::Events, permille.min(1000) as u32, 1000) {
             return None;
         }
-        Some(rand_below(seed, tick, salt ^ 0xF00, Channel::Events, self.cells() as u32) as usize)
+        let prey = e.eats();
+        let n = self.cells() as u32;
+        let mut best_cell = rand_below(seed, tick, salt ^ 0xF00, Channel::Events, n) as usize;
+        let mut best_food = self.sat[prey.index()][best_cell];
+        // Piles cover roughly a percent of a full-sized map; a spark that
+        // only glances at eight cells almost never finds one.
+        for k in 1..64u32 {
+            let c = rand_below(seed, tick, salt ^ 0xF00 ^ (k << 16), Channel::Events, n) as usize;
+            let f = self.sat[prey.index()][c];
+            if f > best_food {
+                best_food = f;
+                best_cell = c;
+            }
+        }
+        Some(best_cell)
     }
 }
 

@@ -68,7 +68,7 @@ struct Args {
 impl Args {
     fn parse() -> Args {
         let mut a = Args {
-            size: 96,
+            size: 256,
             pop: 60,
             speed: 120,
             seed: 0xBEEF,
@@ -79,7 +79,7 @@ impl Args {
         for (i, arg) in argv.iter().enumerate() {
             let v = argv.get(i + 1).and_then(|s| s.parse::<i64>().ok());
             match arg.as_str() {
-                "--size" => a.size = v.unwrap_or(96).clamp(16, 4096) as i32,
+                "--size" => a.size = v.unwrap_or(256).clamp(16, 4096) as i32,
                 "--pop" => a.pop = v.unwrap_or(60).clamp(0, 250) as u32,
                 "--speed" => a.speed = v.unwrap_or(120).clamp(1, 200_000) as u64,
                 "--seed" => a.seed = v.unwrap_or(0xBEEF) as u64,
@@ -93,7 +93,7 @@ impl Args {
                          Every race and terrain attribute is editable while it runs; flags only\n\
                          set the starting conditions.\n\n\
                          options:\n  \
-                         --size N    world edge in cells        (default 96)\n  \
+                         --size N    world edge in cells        (default 256 — one full territory)\n  \
                          --pop N     bodies per race to seed    (default 60)\n  \
                          --speed N   sim ticks per second       (default 120, real time is 1.67)\n  \
                          --seed N    world seed                 (default 0xBEEF)\n  \
