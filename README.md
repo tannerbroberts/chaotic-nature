@@ -20,10 +20,14 @@ disagreed about who decides what is true, the sim won and the loser is in
 
 `chaos` opens a window. You arrive as a **soul** over a living map: tiles show
 their strongest element at one of four strengths, wildlife drifts over them,
-climate springs `◆` feed their element forever, and **birth-moments** pulse as
-ringed marks. Terrain past its threshold opens one; wild sparks — the lightning
-strike — can open anywhere, which keeps every race joinable no matter what the
-map is doing.
+and **birth-moments** pulse as ringed marks. There is no geography — no
+springs, no fixed biomes. The land's primary production is the cycle itself:
+bodies deposit their element where they live and die, the governor floors fall
+as roaming *rain showers* wherever demand runs short, and each race's element
+is the next race's food. Biomes are corpse-piles and habits. Terrain past its
+threshold opens a birth-moment there; wild sparks — the lightning strike — can
+open anywhere, which keeps every race joinable no matter what the map is
+doing.
 
 **Hover anything to learn what it is** — every patch of ground shows its five
 saturations, every marker explains itself. **Click a birth-moment** (on the map
@@ -59,9 +63,12 @@ chaos test             full suite (110 tests)
 The **Tuning** section of the side panel is the whole table as sliders — pick
 an element, drag a value, hover for what it does; the world updates as it runs.
 **Master ratios** sit above the per-race sliders: one row per axis (lifespan,
-movement speed, deposition, consumption, hunger, bite, fertility, climate
-influx, terrain decay, wild sparks) with ÷2 ÷1.25 ×1.25 ×2 buttons that scale
-all five races at once, ratios preserved. "Write tuned table" dumps the current
+movement speed, deposition, consumption, hunger, bite, fertility, terrain
+decay, wild sparks) with ÷2 ÷1.25 ×1.25 ×2 buttons that scale all five races
+at once, ratios preserved. The **creatures ×** slider in the top bar is an
+absolute global speed multiplier applied by the sim itself — one factor over
+every race, no compounding — because mobility is the axis that decides whether
+biomes hold together or smear into one. "Write tuned table" dumps the current
 values to `src/race.tuned.rs`.
 Shipped values live in `src/race.rs` and `src/terrain.rs`. Both clients drive
 the identical knob table from `src/tuning.rs`.

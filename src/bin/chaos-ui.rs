@@ -22,7 +22,6 @@ use pentagram::fx::{Fx, V2};
 use pentagram::input::{CmdKind, Command, InputLog};
 use pentagram::race::TERRAIN_PERIOD;
 use pentagram::rand::{rand_below, rand_signed, Channel};
-use pentagram::terrain::hotspot;
 use pentagram::tuning::{duration, write_table, Knob, Tuning, PAGES, RGB};
 use pentagram::world::{Event, World};
 
@@ -186,6 +185,7 @@ impl App {
 
         self.w.retune(self.t.races);
         self.w.retune_terrain(self.t.terrain);
+        self.w.set_speed_scale(self.t.speed_mult.min(u16::MAX as u32) as u16);
 
         let log = self.inputs(ticks);
         let budget = Instant::now();
@@ -408,6 +408,25 @@ impl App {
                     "Simulation ticks per second. Real time is 1.67 t/s — one tick per 0.6 s. \
                      Wind it up to watch geology; wind it down to live a life.",
                 );
+
+                ui.separator();
+                ui.label("creatures");
+                {
+                    let mut m = self.t.speed_mult as f64 / 1000.0;
+                    let r = ui.add(
+                        egui::Slider::new(&mut m, 0.05..=3.0)
+                            .logarithmic(true)
+                            .custom_formatter(|v, _| format!("×{v:.2}"))
+                            .custom_parser(|s| s.parse::<f64>().ok()),
+                    )
+                    .on_hover_text(
+                        "Global movement multiplier for every race at once, on top of the                          per-race speed knobs. Mobility is the ecology axis with a cliff in                          it: fast worlds smear their biomes into one; slow worlds hold                          their ground. Turn this down if wanderers cross the map in a                          fraction of a life.",
+                    );
+                    if r.changed() {
+                        self.t.speed_mult = (m * 1000.0).round().clamp(10.0, 4000.0) as u32;
+                        self.retuned = true;
+                    }
+                }
 
                 ui.separator();
                 let min = self.w.tick / TERRAIN_PERIOD;
@@ -686,7 +705,7 @@ impl App {
             .default_open(self.show_help)
             .show(ui, |ui| {
                 self.show_help = false;
-                ui.label("Each tile shows its strongest element at one of four strength levels — the land remembering what lived and died on it. A biome levelling up visibly steps brighter.");
+                ui.label("Each tile shows its strongest element at one of four strength levels — the land remembering what lived and died on it. There is no geography: biomes are corpse-piles and habits. Where a race lives is where its element grows, and its element is somebody's food.");
                 ui.horizontal_wrapped(|ui| {
                     for e in Element::ALL {
                         ui.label(RichText::new(format!("■ {}", e.name())).color(ecolor(e)));
@@ -695,7 +714,6 @@ impl App {
                 ui.add_space(4.0);
                 ui.label("• dots — living creatures, coloured by race");
                 ui.label("• ✶ — birth-moments: click one to be born there");
-                ui.label("• ◆ — climate springs: geography that feeds an element forever");
                 ui.label("• hover any ground for its exact saturations");
                 ui.add_space(4.0);
                 ui.label(RichText::new(
@@ -752,26 +770,6 @@ impl App {
                     ((p.x - rect.left()) / scale, (p.y - rect.top()) / scale)
                 };
 
-                // Climate springs — permanent geography, worth knowing.
-                let mut springs: Vec<(Pos2, Element)> = Vec::new();
-                for e in Element::ALL {
-                    for k in 0..pentagram::terrain::HOTSPOTS {
-                        let (hx, hy) = hotspot(self.seed, e, k, side);
-                        let c = to_screen(hx as f32 + 0.5, hy as f32 + 0.5);
-                        painter.add(egui::Shape::convex_polygon(
-                            vec![
-                                c + Vec2::new(0.0, -5.0),
-                                c + Vec2::new(5.0, 0.0),
-                                c + Vec2::new(0.0, 5.0),
-                                c + Vec2::new(-5.0, 0.0),
-                            ],
-                            ecolor(e).gamma_multiply(0.5),
-                            Stroke::new(1.0_f32, ecolor(e)),
-                        ));
-                        springs.push((c, e));
-                    }
-                }
-
                 // Creatures.
                 let player_id = match self.mode {
                     Mode::Body(id) => Some(id),
@@ -819,12 +817,6 @@ impl App {
                             .filter(|(d, _)| *d < 16.0)
                             .min_by(|a, b| a.0.total_cmp(&b.0));
 
-                        let near_spring = springs
-                            .iter()
-                            .map(|(p, e)| (p.distance(hp), *e))
-                            .filter(|(d, _)| *d < 10.0)
-                            .min_by(|a, b| a.0.total_cmp(&b.0));
-
                         if let Some((_, ev)) = near {
                             let el = ev.element;
                             let left = duration(ev.closes.saturating_sub(self.w.tick));
@@ -841,21 +833,6 @@ impl App {
                                     ui.label(RichText::new(format!("✶ {} birth-moment", el.name())).color(ecolor(el)).strong());
                                     ui.label(format!("closes in {left}"));
                                     ui.label(RichText::new(act).weak());
-                                },
-                            );
-                        } else if let Some((_, se)) = near_spring {
-                            egui::show_tooltip_at_pointer(
-                                ctx,
-                                ui.layer_id(),
-                                egui::Id::new("springtip"),
-                                |ui| {
-                                    ui.label(RichText::new(format!("◆ {} climate spring", se.name())).color(ecolor(se)).strong());
-                                    ui.label(format!(
-                                        "Geography: this ground is fed {} saturation every terrain tick, forever. \
-                                         Springs never move — biomes grow around them, and {} eats what grows here.",
-                                        se.name(),
-                                        se.eaten_by().name(),
-                                    ));
                                 },
                             );
                         } else {
@@ -1033,13 +1010,6 @@ const MASTERS: &[Master] = &[
             scale_u32(&mut t.races[e].repro_cost, d, n, floor_cost, 200_000);
             let floor_thr = t.races[e].repro_cost;
             scale_u32(&mut t.races[e].repro_threshold, d, n, floor_thr, 200_000);
-        },
-    },
-    Master {
-        name: "climate influx",
-        help: "How strongly geography feeds its biomes — the base of the whole food chain.",
-        apply: |t, n, d| for e in Element::ALL {
-            scale_u32(&mut t.terrain[e].influx, n, d, 0, 100_000);
         },
     },
     Master {

@@ -356,7 +356,7 @@ fn handle_tune(k: Key, v: &mut View, t: &mut Tuning, sim: &mut Sim, w: &mut Worl
             v.say(format!("{} {} back to the shipped value", e.name(), knobs[v.row].name));
         }
         Key::Char('R') => {
-            *t = Tuning { races: RACES, terrain: pentagram::terrain::TERRAIN, restock: t.restock };
+            *t = Tuning { races: RACES, terrain: pentagram::terrain::TERRAIN, restock: t.restock, speed_mult: 1000 };
             sim.retuned = false;
             v.say("whole table back to the shipped values");
         }

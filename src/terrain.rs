@@ -3,8 +3,13 @@
 //! Each cell holds five saturations, one per element. Bodies write into the
 //! field through the deposition channels and take from it through consumption;
 //! the field then churns on its own: saturation matures around the generating
-//! ring, erodes along the overcoming star, seeps in from climate hotspots,
-//! decays, and diffuses.
+//! ring, erodes along the overcoming star, decays, and diffuses.
+//!
+//! There is no geography. The world's primary production is the deposit
+//! pipeline itself: bodies write their element into the ground, the governor
+//! floors fall as scattered rain wherever demand runs short, and each race's
+//! deposits feed the race that eats it. Biomes are where things lived and
+//! died, not where a map said they should be.
 //!
 //! Succession is not a system anyone writes — it is the generating cycle
 //! running on the field. A burnt region deposits Fire, which matures to Earth,
@@ -13,7 +18,7 @@
 //! ## Operator order is a wire format
 //!
 //! Per terrain tick, in this order: **deposit → consume → overcome → generate
-//! → influx → decay → diffuse**. Within each operator, elements in ring order,
+//! → decay → diffuse**. Within each operator, elements in ring order,
 //! cells in row-major order, updates in place. Reordering any of that changes
 //! results and invalidates every recorded replay.
 //!
@@ -32,8 +37,6 @@ use crate::rand::{rand_below, rand_chance, Channel};
 /// Everything tunable about how one element behaves as terrain.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct TerrainAttrs {
-    /// Saturation injected per terrain tick at each climate hotspot.
-    pub influx: u32,
     /// Passive forgetting, per-mille per terrain tick. Low values make scars
     /// persist for days.
     pub decay: u16,
@@ -73,8 +76,7 @@ impl TerrainAttrs {
 
 impl Hashable for TerrainAttrs {
     fn hash_into(&self, h: &mut Hasher) {
-        h.u32(self.influx)
-            .u16(self.decay)
+        h.u16(self.decay)
             .u16(self.generate)
             .u16(self.overcome)
             .u16(self.diffuse)
@@ -90,21 +92,20 @@ impl Hashable for TerrainAttrs {
 /// brief and unreservable, Earth's builds for half a simulated hour.
 pub const TERRAIN: PerElement<TerrainAttrs> = PerElement([
     // Wood
-    TerrainAttrs { influx: 380, decay: 8, generate: 14, overcome: 6, diffuse: 200, ev_threshold: 9000, ev_window: 800, wild: 125, wild_cap: 80 },
+    TerrainAttrs { decay: 8, generate: 14, overcome: 6, diffuse: 40, ev_threshold: 9000, ev_window: 800, wild: 300, wild_cap: 80 },
     // Fire
-    TerrainAttrs { influx: 320, decay: 14, generate: 22, overcome: 9, diffuse: 260, ev_threshold: 9000, ev_window: 200, wild: 125, wild_cap: 80 },
+    TerrainAttrs { decay: 14, generate: 22, overcome: 9, diffuse: 60, ev_threshold: 9000, ev_window: 200, wild: 300, wild_cap: 80 },
     // Earth
-    TerrainAttrs { influx: 420, decay: 5, generate: 9, overcome: 6, diffuse: 120, ev_threshold: 9000, ev_window: 3000, wild: 125, wild_cap: 80 },
+    TerrainAttrs { decay: 5, generate: 9, overcome: 6, diffuse: 25, ev_threshold: 9000, ev_window: 3000, wild: 300, wild_cap: 80 },
     // Metal
-    TerrainAttrs { influx: 360, decay: 6, generate: 11, overcome: 7, diffuse: 140, ev_threshold: 9000, ev_window: 1500, wild: 125, wild_cap: 80 },
+    TerrainAttrs { decay: 6, generate: 11, overcome: 7, diffuse: 30, ev_threshold: 9000, ev_window: 1500, wild: 300, wild_cap: 80 },
     // Water
-    TerrainAttrs { influx: 400, decay: 9, generate: 16, overcome: 8, diffuse: 300, ev_threshold: 9000, ev_window: 400, wild: 125, wild_cap: 80 },
+    TerrainAttrs { decay: 9, generate: 16, overcome: 8, diffuse: 70, ev_threshold: 9000, ev_window: 400, wild: 300, wild_cap: 80 },
 ]);
 
-/// Cells the floor-churn scatters across each settle.
+/// Cells the floor-churn scatters across each settle. With geography gone,
+/// this scatter IS the weather: the world's rain of unasked-for deposition.
 const SCATTER: u32 = 8;
-/// Climate hotspots per element.
-pub const HOTSPOTS: u32 = 2;
 
 #[derive(Clone, Debug)]
 pub struct Terrain {
@@ -243,16 +244,26 @@ impl Terrain {
         }
     }
 
-    /// Floor churn: deposition (or consumption) nobody asked for, landed at
-    /// hash-chosen cells. This is the world acting on its own — and it is
-    /// deliberately *visible*, because a place nobody plays should still move.
+    /// Floor churn as weather: each settle, this element's unasked-for
+    /// deposition falls as a *shower* — one hash-chosen centre, chunks
+    /// clustered tightly around it. Concentration is the point: rain that
+    /// falls in one place piles up, piles feed grazers and gate
+    /// birth-moments, and the shower centre roams every settle, so no pile
+    /// is geography. Uniform drizzle was tried; it made gruel nothing could
+    /// live on.
     fn scatter(&mut self, e: Element, amount: u64, seed: u64, tick: u64, take: bool) {
-        let n = self.cells() as u32;
+        let side = self.side as i32;
         let each = (amount / SCATTER as u64).max(1).min(u16::MAX as u64) as u16;
+        let salt = (e.index() as u32) << 8;
+        let cx = rand_below(seed, tick, salt | 0x40, Channel::WildChurn, side as u32) as i32;
+        let cy = rand_below(seed, tick, salt | 0x41, Channel::WildChurn, side as u32) as i32;
         let plane = &mut self.sat[e.index()];
         for k in 0..SCATTER {
-            let salt = (e.index() as u32) << 8 | k;
-            let cell = rand_below(seed, tick, salt, Channel::WildChurn, n) as usize;
+            let dx = rand_below(seed, tick, salt | k, Channel::WildChurn, 3) as i32 - 1;
+            let dy = rand_below(seed, tick, salt | 0x20 | k, Channel::WildChurn, 3) as i32 - 1;
+            let x = (cx + dx).clamp(0, side - 1);
+            let y = (cy + dy).clamp(0, side - 1);
+            let cell = (y * side + x) as usize;
             plane[cell] = if take {
                 plane[cell].saturating_sub(each)
             } else {
@@ -291,10 +302,10 @@ impl Terrain {
     pub fn ops(&mut self, attrs: &PerElement<TerrainAttrs>, seed: u64, tick: u64) {
         self.op_overcome(attrs);
         self.op_generate(attrs);
-        self.op_influx(attrs, seed);
         self.op_decay(attrs);
         self.op_diffuse(attrs);
-        let _ = tick; // reserved for operators that will need per-tick draws
+        // Reserved for operators that will need per-tick draws.
+        let _ = (seed, tick);
     }
 
     /// Star erosion: `sat[E]` erodes `sat[O(E)]` in the same cell.
@@ -325,41 +336,6 @@ impl Terrain {
                 let moved = (self.sat[e.index()][i] as u32 * rate / 1000) as u16;
                 self.sat[e.index()][i] -= moved;
                 self.sat[next][i] = self.sat[next][i].saturating_add(moved);
-            }
-        }
-    }
-
-    /// Climate: each element seeps in around its hotspots. Hotspot geography
-    /// is a pure function of the world seed — no state, no hash impact.
-    fn op_influx(&mut self, attrs: &PerElement<TerrainAttrs>, seed: u64) {
-        let side = self.side as i32;
-        let radius = (side / 10).max(2);
-        for e in Element::ALL {
-            let amount = attrs[e].influx;
-            if amount == 0 {
-                continue;
-            }
-            for k in 0..HOTSPOTS {
-                let (cx, cy) = hotspot(seed, e, k, self.side);
-                for dy in -radius..=radius {
-                    for dx in -radius..=radius {
-                        let x = cx as i32 + dx;
-                        let y = cy as i32 + dy;
-                        if x < 0 || y < 0 || x >= side || y >= side {
-                            continue;
-                        }
-                        // Manhattan falloff: cheap, and the diamond it makes
-                        // reads as geography rather than as a stamp.
-                        let d = dx.abs() + dy.abs();
-                        if d > radius {
-                            continue;
-                        }
-                        let add = (amount * (radius - d) as u32 / radius as u32) as u16;
-                        let cell = (y * side + x) as usize;
-                        let p = &mut self.sat[e.index()][cell];
-                        *p = p.saturating_add(add);
-                    }
-                }
             }
         }
     }
@@ -456,15 +432,6 @@ impl Terrain {
     }
 }
 
-/// Where element `e`'s `k`-th climate hotspot sits. A pure function of the
-/// seed: every process that knows the seed knows the climate.
-pub fn hotspot(seed: u64, e: Element, k: u32, side: usize) -> (usize, usize) {
-    let salt = (e.index() as u32) * 16 + k;
-    let x = rand_below(seed, 0xC1_1A7E, salt * 2, Channel::Climate, side as u32) as usize;
-    let y = rand_below(seed, 0xC1_1A7E, salt * 2 + 1, Channel::Climate, side as u32) as usize;
-    (x, y)
-}
-
 impl Hashable for Terrain {
     fn hash_into(&self, h: &mut Hasher) {
         h.u64(self.side as u64);
@@ -518,7 +485,7 @@ mod tests {
         // → Wood. This is the claim that succession is the ring, verified.
         let mut t = Terrain::new(8);
         let mut a = PerElement::filled(TerrainAttrs {
-            influx: 0, decay: 0, generate: 100, overcome: 0, diffuse: 0,
+            decay: 0, generate: 100, overcome: 0, diffuse: 0,
             ev_threshold: 0, ev_window: 100, wild: 0, wild_cap: 0,
         });
         let _ = &mut a;
@@ -551,19 +518,6 @@ mod tests {
     }
 
     #[test]
-    fn influx_builds_biomes_from_nothing() {
-        let mut t = Terrain::new(32);
-        let a = attrs();
-        for tick in 0..40 {
-            t.ops(&a, 0xBEEF, tick);
-        }
-        for e in Element::ALL {
-            let total: u64 = t.sat[e.index()].iter().map(|v| *v as u64).sum();
-            assert!(total > 0, "{} grew nothing from its hotspots", e.name());
-        }
-    }
-
-    #[test]
     fn no_absorbing_state_from_any_monoculture() {
         // Saturate the whole map with one element and let the field run. If
         // any single-element state is a fixed point, a race can be permanently
@@ -592,7 +546,7 @@ mod tests {
     fn diffusion_spreads_without_creating() {
         let mut t = Terrain::new(9);
         let a = PerElement::filled(TerrainAttrs {
-            influx: 0, decay: 0, generate: 0, overcome: 0, diffuse: 300,
+            decay: 0, generate: 0, overcome: 0, diffuse: 70,
             ev_threshold: 0, ev_window: 100, wild: 0, wild_cap: 0,
         });
         let center = 4 * 9 + 4;
@@ -676,11 +630,4 @@ mod tests {
         assert_eq!(ha.finish(), hb.finish());
     }
 
-    #[test]
-    fn hotspots_are_stable_per_seed_and_differ_across_seeds() {
-        let a = hotspot(1, Element::Water, 0, 96);
-        assert_eq!(a, hotspot(1, Element::Water, 0, 96));
-        let others: Vec<_> = (2..12u64).map(|s| hotspot(s, Element::Water, 0, 96)).collect();
-        assert!(others.iter().any(|o| *o != a), "climate ignores the seed");
-    }
 }

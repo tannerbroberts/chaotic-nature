@@ -80,6 +80,11 @@ pub struct World {
     pub races: PerElement<RaceAttrs>,
     /// Same story for the terrain's tuning.
     pub terrain_attrs: PerElement<TerrainAttrs>,
+    /// Global movement multiplier, permille, applied on top of every race's
+    /// speed. Mobility decides whether biomes coexist or smear into one — the
+    /// most consequential single number in the ecology, so it gets a global
+    /// control of its own.
+    pub speed_scale: u16,
 
     /// The S1 field: five saturation planes plus the demand accumulated
     /// against them since the last settle.
@@ -111,6 +116,7 @@ impl World {
             size: Fx::from_int(size_cells),
             races: RACES,
             terrain_attrs: TERRAIN,
+            speed_scale: 1000,
             terrain: Terrain::new(side),
             events: Vec::new(),
             next_event_id: 1,
@@ -141,6 +147,11 @@ impl World {
     /// Swap the terrain tuning table. Takes effect at the next terrain tick.
     pub fn retune_terrain(&mut self, t: PerElement<TerrainAttrs>) {
         self.terrain_attrs = t;
+    }
+
+    /// Set the global movement multiplier, in permille of table speed.
+    pub fn set_speed_scale(&mut self, permille: u16) {
+        self.speed_scale = permille.clamp(10, 4000);
     }
 
     /// A deterministic starting population, spread evenly across the five
@@ -317,12 +328,13 @@ impl World {
         }
     }
 
-    /// How often a body reconsiders where the food is, and how long an
-    /// explicit `SetHeading` suppresses that instinct.
+    /// How often a body reconsiders where the food is — hunger sharpens the
+    /// nose — and how long an explicit `SetHeading` suppresses that instinct.
     const SEEK_PERIOD: u64 = 40;
+    const SEEK_PERIOD_HUNGRY: u64 = 10;
     const STEER_GRACE: u64 = 300;
     /// How far ahead a body smells, in cells.
-    const SEEK_REACH: i32 = 3;
+    const SEEK_REACH: i32 = 6;
 
     /// 3 — move, jitter, and reflect off the bounds. Action demand lands at
     /// the cell the body moved *into*, which is what makes Water's wake a
@@ -337,17 +349,24 @@ impl World {
     fn phase_movement(&mut self) {
         let (seed, tick, size) = (self.seed, self.tick, self.size);
         let races = self.races;
+        let scale = self.speed_scale as i64;
 
         for i in 0..self.entities.len() {
             // Seek reads the field, so it runs before the mutable borrow.
-            let (id, el, pos, steered_at, alive) = {
+            let (id, el, pos, steered_at, energy, alive) = {
                 let e = &self.entities[i];
-                (e.id, e.element, e.pos, e.steered_at, e.alive)
+                (e.id, e.element, e.pos, e.steered_at, e.energy, e.alive)
             };
             if !alive {
                 continue;
             }
-            let seek = if (tick + id as u64).is_multiple_of(Self::SEEK_PERIOD)
+            // A hungry body sniffs four times as often.
+            let period = if energy < races[el].birth_energy / 2 {
+                Self::SEEK_PERIOD_HUNGRY
+            } else {
+                Self::SEEK_PERIOD
+            };
+            let seek = if (tick + id as u64).is_multiple_of(period)
                 && tick.saturating_sub(steered_at) >= Self::STEER_GRACE
             {
                 let prey = el.eats();
@@ -356,7 +375,11 @@ impl World {
                 let mut best = here + here / 4;
                 let mut turn = None;
                 let reach = Fx::from_int(Self::SEEK_REACH);
-                for (dx, dy) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                // Eight compass directions, fixed order.
+                for (dx, dy) in [
+                    (1i32, 0i32), (-1, 0), (0, 1), (0, -1),
+                    (1, 1), (1, -1), (-1, 1), (-1, -1),
+                ] {
                     let probe = V2::new(
                         (pos.x + reach * dx).clamp(Fx::ZERO, size),
                         (pos.y + reach * dy).clamp(Fx::ZERO, size),
@@ -364,7 +387,7 @@ impl World {
                     let s = self.terrain.sat_at(prey, self.terrain.cell_of(probe));
                     if s > best {
                         best = s;
-                        turn = Some(V2::new(Fx::from_int(dx), Fx::from_int(dy)));
+                        turn = Some(V2::new(Fx::from_int(dx), Fx::from_int(dy)).normalized());
                     }
                 }
                 turn
@@ -376,7 +399,8 @@ impl World {
             if let Some(dir) = seek {
                 e.heading = dir;
             }
-            let step = e.heading.scale(races[e.element].speed);
+            let sp = Fx::from_raw((races[e.element].speed.raw() as i64 * scale / 1000) as i32);
+            let step = e.heading.scale(sp);
             let jitter = V2::new(
                 rand_signed(seed, tick, e.id, Channel::MoveJitter) * JITTER,
                 rand_signed(seed, tick, e.id.wrapping_add(0x9E37), Channel::MoveJitter) * JITTER,
@@ -658,6 +682,7 @@ impl World {
         for (_, a) in self.terrain_attrs.iter() {
             a.hash_into(&mut h);
         }
+        h.u16(self.speed_scale);
         self.terrain.hash_into(&mut h);
 
         h.u32(self.events.len() as u32);
@@ -942,15 +967,17 @@ mod tests {
         // its 12-hour lifespan.
         let mut w = World::new(11, 32);
         let mut ta = crate::terrain::TERRAIN;
+        let mut races = RACES;
         for e in Element::ALL {
-            ta[e].influx = 0;
             ta[e].wild = 0;
             // A body's own deposits can cross the event gate and host a
             // successor — the rebirth loop working. Shut it here: this test
-            // is about metabolism in isolation.
+            // is about metabolism in isolation, so the rain stops too.
             ta[e].ev_threshold = u16::MAX;
+            races[e].deposit = crate::race::RateBand::new(0, 0, 0, 1);
         }
         w.retune_terrain(ta);
+        w.retune(races);
         w.spawn(Element::Metal, V2::new(Fx::from_int(16), Fx::from_int(16)));
         let log = InputLog::new();
         for _ in 0..2000 {
@@ -967,12 +994,14 @@ mod tests {
         // from surplus alone — no restocking, no commands.
         let mut w = World::new(13, 32);
         let mut ta = crate::terrain::TERRAIN;
+        let mut races = RACES;
         for e in Element::ALL {
-            ta[e].influx = 0;
             ta[e].wild = 0;
             ta[e].ev_threshold = u16::MAX;
+            races[e].deposit = crate::race::RateBand::new(0, 0, 0, 1);
         }
         w.retune_terrain(ta);
+        w.retune(races);
         for cell in 0..w.terrain.cells() {
             w.terrain.sat[Element::Fire.index()][cell] = 50_000;
         }
@@ -1013,6 +1042,30 @@ mod tests {
         assert!(
             end < mid + mid / 2 + 50,
             "population still accelerating on default knobs: {mid} → {end}"
+        );
+    }
+
+    #[test]
+    fn the_global_speed_scale_slows_everybody() {
+        // Same seed, same body, empty terrain (so seek stays quiet): a world
+        // at quarter scale must cover far less ground.
+        let start = V2::new(Fx::from_int(48), Fx::from_int(48));
+        let mut fast = World::new(21, 96);
+        let mut slow = World::new(21, 96);
+        slow.set_speed_scale(250);
+        fast.spawn(Element::Water, start);
+        slow.spawn(Element::Water, start);
+        let log = InputLog::new();
+        for _ in 0..100 {
+            fast.step(&log);
+            slow.step(&log);
+        }
+        let d = |w: &World| (w.entities[0].pos - start).len();
+        assert!(
+            d(&fast) > d(&slow) * 2,
+            "quarter scale should travel far less: {:?} vs {:?}",
+            d(&fast),
+            d(&slow)
         );
     }
 }

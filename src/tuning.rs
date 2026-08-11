@@ -21,6 +21,11 @@ pub struct Tuning {
     pub races: PerElement<RaceAttrs>,
     pub terrain: PerElement<TerrainAttrs>,
     pub restock: PerElement<u32>,
+    /// Global movement multiplier, permille. Applied by the world on top of
+    /// every race's speed — one absolute slider, no compounding. Mobility is
+    /// the parameter that decides whether biomes coexist or smear into one,
+    /// so the master control for it is a first-class citizen.
+    pub speed_mult: u32,
 }
 
 impl Tuning {
@@ -33,6 +38,7 @@ impl Tuning {
             races: RACES,
             terrain: TERRAIN,
             restock: PerElement::filled(0),
+            speed_mult: 1000,
         }
     }
 }
@@ -243,11 +249,7 @@ static MIX: [Knob; 10] = [
     mix_knobs!("con existence", consume_mix, Channel::OnExistence, "taken by being present"),
 ];
 
-static TERRAIN_KNOBS: [Knob; 9] = [
-    knob!("influx", Fmt::Int, Step::Scale, 0, 100_000,
-          "saturation seeping in per terrain tick at each climate hotspot — how strong this biome's geography is",
-          |t, e| t.terrain[e].influx as i64,
-          |t, e, v| t.terrain[e].influx = v as u32),
+static TERRAIN_KNOBS: [Knob; 8] = [
     knob!("decay ‰", Fmt::Permille, Step::Add(1), 0, 1000,
           "passive forgetting per terrain tick; low values make scars persist for days",
           |t, e| t.terrain[e].decay as i64,
@@ -444,10 +446,10 @@ pub fn write_table(t: &Tuning) -> std::io::Result<String> {
         let a = t.terrain[e];
         let _ = write!(
             s,
-            "    // {}\n    TerrainAttrs {{ influx: {}, decay: {}, generate: {}, overcome: {}, \
+            "    // {}\n    TerrainAttrs {{ decay: {}, generate: {}, overcome: {}, \
              diffuse: {}, ev_threshold: {}, ev_window: {}, wild: {}, wild_cap: {} }},\n",
             e.name(),
-            a.influx, a.decay, a.generate, a.overcome,
+            a.decay, a.generate, a.overcome,
             a.diffuse, a.ev_threshold, a.ev_window, a.wild, a.wild_cap,
         );
     }
