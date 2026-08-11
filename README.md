@@ -104,8 +104,8 @@ neighbours, and no terrain operator acts at a distance.
 ### Four things that are easy to break later
 
 **The terrain operator order is a wire format.** Per terrain tick: deposit →
-consume → overcome → generate → influx → decay → diffuse, elements in ring
-order, cells row-major, in place. Same rule as the phase order below.
+consume → overcome → generate → decay → diffuse, elements in ring order,
+cells row-major, in place. Same rule as the phase order below.
 
 **Overflow behaviour must match across profiles.** Rust panics on overflow in
 debug and wraps in release — two different simulations from one source tree.
