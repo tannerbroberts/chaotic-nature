@@ -76,6 +76,14 @@ enum Mode {
     Body(u32),
 }
 
+/// What the map is showing: every resource, or the world as one race sees it —
+/// predators red, prey green, the indifferent in grayscale.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MapView {
+    All,
+    Race(Element),
+}
+
 struct App {
     w: World,
     t: Tuning,
@@ -103,6 +111,7 @@ struct App {
 
     terrain_tex: Option<egui::TextureHandle>,
     knob_element: Element,
+    view: MapView,
     show_help: bool,
 }
 
@@ -133,6 +142,7 @@ impl App {
             notice: None,
             terrain_tex: None,
             knob_element: Element::Fire,
+            view: MapView::All,
             show_help: true,
         }
     }
@@ -272,9 +282,14 @@ impl App {
                         .entities
                         .binary_search_by_key(&cent, |e| e.id)
                         .ok()
-                        .map(|i| self.w.entities[i].element.name())
-                        .unwrap_or("?");
-                    self.say(format!("Born as {el}. Click the ground to move toward it."));
+                        .map(|i| self.w.entities[i].element);
+                    if let Some(el) = el {
+                        self.view = MapView::Race(el);
+                        self.say(format!(
+                            "Born as {}. Green feeds you, red hunts you. Click the ground to move.",
+                            el.name()
+                        ));
+                    }
                 }
                 _ if !self.w.events.iter().any(|e| e.id == eid) => {
                     self.await_claim = None;
@@ -306,6 +321,30 @@ fn ecolor(e: Element) -> Color32 {
     Color32::from_rgb(c.0, c.1, c.2)
 }
 
+const HUNTS_YOU: Color32 = Color32::from_rgb(228, 78, 64);
+const FEEDS_YOU: Color32 = Color32::from_rgb(96, 198, 100);
+const INDIFFERENT: Color32 = Color32::from_rgb(148, 150, 156);
+
+/// An element's colour under the current lens. In a race view the world is
+/// sorted by what it means to that race: the one that eats you is red, the
+/// one you eat is green, you are yourself, and the rest fade to grayscale.
+fn view_color(view: MapView, e: Element) -> Color32 {
+    match view {
+        MapView::All => ecolor(e),
+        MapView::Race(r) => {
+            if e == r {
+                ecolor(e)
+            } else if e == r.eats() {
+                FEEDS_YOU
+            } else if e == r.eaten_by() {
+                HUNTS_YOU
+            } else {
+                INDIFFERENT
+            }
+        }
+    }
+}
+
 const GROUND: Color32 = Color32::from_rgb(16, 18, 24);
 
 /// Saturation buckets, shared by rendering and (eventually) tile-asset
@@ -330,19 +369,20 @@ fn bucket(sat: u16) -> Option<usize> {
 /// A cell's colour: the *dominant* element's hue at its bucket's brightness.
 /// Blending was tried and rejected — averaging five hues turns every frontier
 /// brown. Dominance + stepped brightness reads as terrain: patches have edges,
-/// and a strengthening biome visibly changes level.
-fn cell_color(w: &World, cell: usize) -> Color32 {
+/// and a strengthening biome visibly changes level. Under a race lens the hue
+/// comes from what the element means to that race.
+fn cell_color(w: &World, cell: usize, view: MapView) -> Color32 {
     let (el, sat) = w.terrain.dominant(cell);
     let Some(level) = bucket(sat) else {
         return GROUND;
     };
     let bright: u32 = [80, 130, 185, 245][level];
-    let c = RGB[el];
+    let c = view_color(view, el);
     let g = GROUND;
     let mix = |cv: u8, gv: u8| -> u8 {
         ((cv as u32 * bright + gv as u32 * (255 - bright)) / 255) as u8
     };
-    Color32::from_rgb(mix(c.0, g.r()), mix(c.1, g.g()), mix(c.2, g.b()))
+    Color32::from_rgb(mix(c.r(), g.r()), mix(c.g(), g.g()), mix(c.b(), g.b()))
 }
 
 // ----------------------------------------------------------------------
@@ -408,6 +448,30 @@ impl App {
                     "Simulation ticks per second. Real time is 1.67 t/s — one tick per 0.6 s. \
                      Wind it up to watch geology; wind it down to live a life.",
                 );
+
+                ui.separator();
+                ui.label("view");
+                {
+                    let all = self.view == MapView::All;
+                    if ui.selectable_label(all, "All").on_hover_text("Every resource: each tile's strongest element in its own colour.").clicked() {
+                        self.view = MapView::All;
+                    }
+                    for e in Element::ALL {
+                        let sel = self.view == MapView::Race(e);
+                        let chip = ui.selectable_label(sel, RichText::new(e.name()).color(ecolor(e)));
+                        if chip
+                            .on_hover_text(format!(
+                                "The world as {} sees it: {} glows green (it feeds you), {} glows red (it hunts you), the rest fade to gray.",
+                                e.name(),
+                                e.eats().name(),
+                                e.eaten_by().name()
+                            ))
+                            .clicked()
+                        {
+                            self.view = MapView::Race(e);
+                        }
+                    }
+                }
 
                 ui.separator();
                 ui.label("creatures");
@@ -715,6 +779,7 @@ impl App {
                 ui.label("• dots — living creatures, coloured by race");
                 ui.label("• ✶ — birth-moments: click one to be born there");
                 ui.label("• hover any ground for its exact saturations");
+                ui.label("• the view chips up top re-colour the whole map through one race's eyes: green feeds it, red hunts it, gray is neither");
                 ui.add_space(4.0);
                 ui.label(RichText::new(
                     "The cycle: everything eats its neighbour — Wood→Fire→Earth→Metal→Water→Wood. \
@@ -737,7 +802,7 @@ impl App {
                 // Terrain texture, rebuilt every frame — 9 216 pixels is free.
                 let mut img = egui::ColorImage::new([side, side], GROUND);
                 for (i, px) in img.pixels.iter_mut().enumerate() {
-                    *px = cell_color(&self.w, i);
+                    *px = cell_color(&self.w, i, self.view);
                 }
                 // NEAREST, not LINEAR: cells are tiles, and tiles have edges.
                 // Linear filtering turned the whole field into fog.
@@ -781,7 +846,7 @@ impl App {
                     }
                     let p = to_screen(ent.pos.x.to_f32_render(), ent.pos.y.to_f32_render());
                     let r = (self.t.races[ent.element].radius.to_f32_render() * scale * 0.6).clamp(1.5, 8.0);
-                    painter.circle_filled(p, r, ecolor(ent.element));
+                    painter.circle_filled(p, r, view_color(self.view, ent.element));
                     if player_id == Some(ent.id) {
                         painter.circle_stroke(p, r + 4.0, Stroke::new(2.0_f32, Color32::WHITE));
                         painter.text(
@@ -801,7 +866,7 @@ impl App {
                     let ex = (ev.cell as usize % side) as f32 + 0.5;
                     let ey = (ev.cell as usize / side) as f32 + 0.5;
                     let p = to_screen(ex, ey);
-                    let c = ecolor(ev.element);
+                    let c = view_color(self.view, ev.element);
                     painter.circle_stroke(p, 6.0 + pulse * 4.0, Stroke::new(2.0_f32, c));
                     painter.circle_filled(p, 3.0, Color32::WHITE.gamma_multiply(0.6 + 0.4 * pulse));
                     painter.circle_filled(p, 2.0, c);

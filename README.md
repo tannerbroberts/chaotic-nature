@@ -31,6 +31,12 @@ threshold opens a birth-moment there; wild sparks — the lightning strike — c
 open anywhere, which keeps every race joinable no matter what the map is
 doing.
 
+**Six lenses on one map.** The view chips in the top bar show either every
+resource (each tile's strongest element in its own colour) or the world
+through one race's eyes: what feeds it glows green, what hunts it glows red,
+and the indifferent fades to grayscale — tiles, creatures and birth-moments
+alike. Incarnating snaps the map to your own race's lens.
+
 **Hover anything to learn what it is** — every patch of ground shows its five
 saturations, every marker explains itself. **Click a birth-moment** (on the map
 or in the side list) to be born there as that race. The sim slows to
